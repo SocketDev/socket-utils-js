@@ -1,0 +1,23 @@
+{
+  "root": true,
+  "extends": [
+    "@socketsecurity",
+    "plugin:import/typescript"
+  ],
+  "parserOptions": {
+    "project": ["./tsconfig.json"]
+  },
+  "overrides": [],
+  "rules": {
+    "@typescript-eslint/no-misused-promises": "warn",
+    "@typescript-eslint/no-floating-promises": "warn",
+    "@typescript-eslint/quotes": [
+      "error",
+      "single",
+      {
+        "avoidEscape": true,
+        "allowTemplateLiterals": false
+      }
+    ]
+  }
+}
