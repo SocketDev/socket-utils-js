@@ -146,10 +146,10 @@ export default class NodeVFS extends VFS<Buffer> {
     // We accept that risk here - avoid existsSync to not block
     try {
       // no this.fsPath because this is a public API method
-      await fs.promises.lstat(file)
+      await withVFSErr(fs.promises.lstat(this.fsPath(file)))
       return true
     } catch (err) {
-      if (err && (err as { code?: string }).code === 'ENOENT') {
+      if (err instanceof VFSError && err.code === 'ENOENT') {
         return false
       }
       throw err
@@ -157,11 +157,11 @@ export default class NodeVFS extends VFS<Buffer> {
   }
 
   protected async _readDir (dir: string) {
-    return await fs.promises.readdir(this.fsPath(dir))
+    return await withVFSErr(fs.promises.readdir(this.fsPath(dir)))
   }
 
   protected async _readDirent (dir: string) {
-    const dirents = await fs.promises.readdir(this.fsPath(dir), { withFileTypes: true })
+    const dirents = await withVFSErr(fs.promises.readdir(this.fsPath(dir), { withFileTypes: true }))
     return dirents.map<VFSDirent | null>(ent => {
       const type = getEntryType(ent)
       return type && {
@@ -172,7 +172,7 @@ export default class NodeVFS extends VFS<Buffer> {
   }
 
   protected async _readFile (file: string, signal?: AbortSignal | undefined) {
-    return await fs.promises.readFile(this.fsPath(file), { signal })
+    return await withVFSErr(fs.promises.readFile(this.fsPath(file), { signal }))
   }
 
   protected _readFileStream (file: string, signal?: AbortSignal | undefined) {
@@ -184,15 +184,15 @@ export default class NodeVFS extends VFS<Buffer> {
 
   protected async _removeDir (dir: string, recursive: boolean, _signal?: AbortSignal | undefined) {
     // TODO: handle abort signal
-    await fs.promises.rm(await ensureDir(this.fsPath(dir)), { recursive })
+    await withVFSErr(fs.promises.rm(await ensureDir(this.fsPath(dir)), { recursive }))
   }
 
   protected async _removeFile (file: string, _signal?: AbortSignal | undefined) {
-    await fs.promises.unlink(this.fsPath(file))
+    await withVFSErr(fs.promises.unlink(this.fsPath(file)))
   }
 
   protected async _stat (file: string) {
-    const stat = await fs.promises.stat(file)
+    const stat = await withVFSErr(fs.promises.stat(this.fsPath(file)))
     const type = getEntryType(stat)
 
     if (!type) {
@@ -206,7 +206,7 @@ export default class NodeVFS extends VFS<Buffer> {
   }
 
   protected async _lstat (file: string) {
-    const stat = await fs.promises.lstat(file)
+    const stat = await withVFSErr(fs.promises.lstat(this.fsPath(file)))
     const type = getEntryType(stat)
 
     if (!type) {
@@ -220,7 +220,7 @@ export default class NodeVFS extends VFS<Buffer> {
   }
 
   protected async _writeFile (file: string, data: Uint8Array, signal?: AbortSignal | undefined) {
-    await fs.promises.writeFile(file, data, { signal })
+    await withVFSErr(fs.promises.writeFile(this.fsPath(file), data, { signal }))
   }
 
   protected _writeFileStream (file: string, signal?: AbortSignal | undefined) {
