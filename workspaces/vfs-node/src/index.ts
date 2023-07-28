@@ -3,17 +3,17 @@ import * as path from 'node:path'
 import { Readable, Writable, addAbortSignal } from 'node:stream'
 import { ReadableStream as NodeReadableStream } from 'node:stream/web'
 
-import { VFS, VFSError, VFSFileHandle, VFSWatchCallback, VFSWatchErrorCallback, path as vfsPath } from '@socketsecurity/vfs'
-import {
-  AsyncSubscription as WatcherSubscription,
-  Event as WatchEvent,
-  subscribe as subscribeWatcher
-} from '@parcel/watcher'
+import { subscribe as subscribeWatcher } from '@parcel/watcher'
+import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
 import { matcher } from 'micromatch'
 
-import type { VFSWriteStream, VFSDirent, VFSEntryType, VFSErrorCode, VFSReadStream } from '@socketsecurity/vfs'
-import type { WritableStream as NodeWritableStream } from 'node:stream/web'
+import type {
+  AsyncSubscription as WatcherSubscription,
+  Event as WatchEvent
+} from '@parcel/watcher'
+import type { VFSWriteStream, VFSDirent, VFSEntryType, VFSErrorCode, VFSReadStream, VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
 import type { FileHandle } from 'node:fs/promises'
+import type { WritableStream as NodeWritableStream } from 'node:stream/web'
 
 export function toNodeReadable (source: VFSReadStream) {
   return Readable.fromWeb(source as NodeReadableStream<Uint8Array>)
@@ -118,7 +118,7 @@ class NodeVFSFileHandle extends VFSFileHandle {
     return new NodeVFSFileHandle(handle)
   }
 
-  protected async _stat() {
+  protected async _stat () {
     const stats = await withVFSErr(this.handle.stat())
 
     const entryType = getEntryType(stats)
@@ -133,25 +133,25 @@ class NodeVFSFileHandle extends VFSFileHandle {
     }
   }
 
-  protected async _truncate(to: number) {
+  protected async _truncate (to: number) {
     await withVFSErr(this.handle.truncate(to))
   }
 
-  protected async _flush() {
+  protected async _flush () {
     await withVFSErr(this.handle.datasync())
   }
 
-  protected async _read(into: Uint8Array, position: number): Promise<number> {
+  protected async _read (into: Uint8Array, position: number): Promise<number> {
     const { bytesRead } = await withVFSErr(this.handle.read(into, 0, into.byteLength, position))
     return bytesRead
   }
 
-  protected async _write(data: Uint8Array, position: number) {
+  protected async _write (data: Uint8Array, position: number) {
     const { bytesWritten } = await withVFSErr(this.handle.write(data, 0, data.byteLength, position))
     return bytesWritten
   }
 
-  protected async _close() {
+  protected async _close () {
     await withVFSErr(this.handle.close())
   }
 }

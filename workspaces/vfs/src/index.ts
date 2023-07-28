@@ -159,10 +159,7 @@ export abstract class VFS<
   }
 
   async open (file: string, options: { read?: boolean, write?: boolean } = {}) {
-    let read = options.read || options.write == null
-    let write = !!options.write
-
-    return this._openFile(file, read, write)
+    return this._openFile(file, options.read || options.write == null, !!options.write)
   }
 
   async watch (glob: string): Promise<VFSWatcher> {
@@ -204,22 +201,23 @@ export abstract class VFS<
 
         let curResolve!: () => void
         let curReject!: (err: Error) => void
-        let next = new Promise<void>((res, rej) => {
-          curResolve = res
-          curReject = rej
+        let next = new Promise<void>((resolve, reject) => {
+          curResolve = resolve
+          curReject = reject
         })
         callbacks.push(evt => {
           curResolve()
           results.push(evt)
-          next = new Promise<void>((res, rej) => {
-            curResolve = res
-            curReject = rej
+          next = new Promise<void>((resolve, reject) => {
+            curResolve = resolve
+            curReject = reject
           })
         })
         errCallbacks.push(err => {
           curReject(err)
         })
 
+        // eslint-disable-next-line no-unmodified-loop-condition
         while (!done) {
           if (!results.length) await next
           const oldResults = results

@@ -15,26 +15,14 @@
   "homepage": "https://github.com/SocketDev/socket-utils-js",
   "repository": {
     "type": "git",
-    "url": "git://github.com/SocketDev/socket-sdk-utils.git"
+    "url": "git://github.com/SocketDev/socket-utils-js.git"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "scripts": {
     "build": "npm run build --workspaces",
-    "lint": "eslint ."
-  },
-  "dependencies": {
-    "pony-cause": "^2.1.10"
-  },
-  "devDependencies": {
-    "@socketsecurity/eslint-config": "^3.0.1",
-    "@types/node": "^18.17.0",
-    "@typescript-eslint/eslint-plugin": "^5.56.0",
-    "@typescript-eslint/parser": "^5.56.0",
-    "eslint": "^8.45.0",
-    "eslint-import-resolver-typescript": "^3.5.5",
-    "eslint-plugin-import": "^2.27.5",
-    "typescript": "^5.0.4"
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   }
 }
