@@ -43,12 +43,54 @@ export interface VFSStats {
 }
 
 export abstract class VFSFileHandle {
+  private _closed: boolean
+
+  constructor () {
+    this._closed = false
+  }
+
   protected abstract _read (into: Uint8Array, position: number): Promise<number>
   protected abstract _write (data: Uint8Array, position: number): Promise<number>
   protected abstract _truncate (to: number): Promise<void>
   protected abstract _flush (): Promise<void>
   protected abstract _stat (): Promise<VFSStats>
   protected abstract _close (): Promise<void>
+
+  private _assertOpen () {
+    if (this._closed) {
+      throw new VFSError('file handle is closed', { code: 'EINVAL' })
+    }
+  }
+
+  async read (into: Uint8Array, position: number) {
+    this._assertOpen()
+    return this._read(into, position)
+  }
+
+  async write (into: Uint8Array, position: number) {
+    this._assertOpen()
+    return this._write(into, position)
+  }
+
+  async truncate (to: number) {
+    this._assertOpen()
+    return this._truncate(to)
+  }
+
+  async flush () {
+    if (this._closed) return
+    return this._flush()
+  }
+
+  async stat () {
+    this._assertOpen()
+    return this._stat()
+  }
+
+  async close () {
+    if (this._closed) return
+    return this._close()
+  }
 }
 
 export type VFSWatchEventType = 'create' | 'update' | 'delete'

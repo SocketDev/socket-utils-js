@@ -169,51 +169,63 @@ type WatchCallback = {
 export class NodeVFS extends VFS<
   Buffer
 > {
-  private base: string
-  private root: string
-  private enforceBase: boolean
-  private watchCallbacks: Set<WatchCallback>
-  private watcher?: WatcherSubscription
+  private _base: string
+  private _root: string
+  private _enforceBase: boolean
+  private _watchCallbacks: Set<WatchCallback>
+  private _watcher?: WatcherSubscription
 
   constructor (basePath?: string, lockToRoot = true) {
     super()
-    this.base = path.resolve(basePath ?? '.')
-    this.root = path.parse(this.base).root
-    this.enforceBase = lockToRoot
-    this.watchCallbacks = new Set()
+    this._base = path.resolve(basePath ?? '.')
+    this._root = path.parse(this._base).root
+    this._enforceBase = lockToRoot
+    this._watchCallbacks = new Set()
   }
 
-  private fsPath (src: string) {
+  private _fsPath (src: string) {
     const rel = vfsPath.parse(src)
-    if (!rel.length) return this.base
-    if (this.enforceBase && rel[0] === '..') {
+    if (!rel.length) return this._base
+    if (this._enforceBase && rel[0] === '..') {
       throw new VFSError('path outside base directory', { code: 'EPERM' })
     }
-    return path.join(this.base, ...rel)
+    return path.join(this._base, ...rel)
+  }
+
+  private _relPath (src: string) {
+    if (path.parse(src).root !== this._root) {
+      throw new VFSError('cannot resolve filepath outside filesystem root', { code: 'ENOSYS' })
+    }
+    return vfsPath.join(...path.relative(this._base, src).split(path.sep))
   }
 
   private onWatch (err: Error | null, events: WatchEvent[]) {
     if (err) {
       const wrapped = new VFSError(err.message, { cause: err })
-      for (const cb of this.watchCallbacks) {
+      for (const cb of this._watchCallbacks) {
         cb.err(wrapped)
       }
     }
     for (const event of events) {
-      for (const cb of this.watchCallbacks) {
-        if (cb.isMatch(event.path)) {
-          cb.fire(event)
+      const fixedPath = this._relPath(event.path)
+      const evt = {
+        path: fixedPath,
+        type: event.type
+      }
+      for (const cb of this._watchCallbacks) {
+        if (cb.isMatch(fixedPath)) {
+          cb.fire(evt)
         }
       }
     }
   }
 
   protected async _appendFile (file: string, data: Uint8Array, signal?: AbortSignal) {
-    await withVFSErr(fs.promises.writeFile(this.fsPath(file), data, { flag: 'a', signal }))
+    await withVFSErr(fs.promises.writeFile(this._fsPath(file), data, { flag: 'a', signal }))
   }
 
   protected _appendFileStream (file: string, signal?: AbortSignal | undefined) {
-    const stream = fs.createWriteStream(this.fsPath(file), { flags: 'a' })
+    const stream = fs.createWriteStream(this._fsPath(file), { flags: 'a' })
     if (signal) addAbortSignal(signal, stream)
 
     return nodeToVFSWritable(stream)
@@ -222,15 +234,15 @@ export class NodeVFS extends VFS<
   protected async _copyDir (src: string, dst: string, _signal?: AbortSignal | undefined) {
     // TODO: handle abort signal
     await withVFSErr(fs.promises.cp(
-      await ensureDir(this.fsPath(src)),
-      this.fsPath(dst),
+      await ensureDir(this._fsPath(src)),
+      this._fsPath(dst),
       { recursive: true }
     ))
   }
 
   protected async _copyFile (src: string, dst: string, _signal?: AbortSignal | undefined) {
     // TODO: handle abort signal
-    await withVFSErr(fs.promises.copyFile(this.fsPath(src), this.fsPath(dst)))
+    await withVFSErr(fs.promises.copyFile(this._fsPath(src), this._fsPath(dst)))
   }
 
   protected async _exists (file: string) {
@@ -238,7 +250,7 @@ export class NodeVFS extends VFS<
     // We accept that risk here - avoid existsSync to not block
     try {
       // no this.fsPath because this is a public API method
-      await withVFSErr(fs.promises.lstat(this.fsPath(file)))
+      await withVFSErr(fs.promises.lstat(this._fsPath(file)))
       return true
     } catch (err) {
       if (err instanceof VFSError && err.code === 'ENOENT') {
@@ -249,11 +261,14 @@ export class NodeVFS extends VFS<
   }
 
   protected async _readDir (dir: string) {
-    return await withVFSErr(fs.promises.readdir(this.fsPath(dir)))
+    return await withVFSErr(fs.promises.readdir(this._fsPath(dir)))
   }
 
   protected async _readDirent (dir: string) {
-    const dirents = await withVFSErr(fs.promises.readdir(this.fsPath(dir), { withFileTypes: true }))
+    const dirents = await withVFSErr(
+      fs.promises.readdir(this._fsPath(dir),
+      { withFileTypes: true })
+    )
     return dirents.map<VFSDirent | null>(ent => {
       const type = getEntryType(ent)
       return type && {
@@ -264,11 +279,11 @@ export class NodeVFS extends VFS<
   }
 
   protected async _readFile (file: string, signal?: AbortSignal | undefined) {
-    return await withVFSErr(fs.promises.readFile(this.fsPath(file), { signal }))
+    return await withVFSErr(fs.promises.readFile(this._fsPath(file), { signal }))
   }
 
   protected _readFileStream (file: string, signal?: AbortSignal | undefined) {
-    const stream = fs.createReadStream(this.fsPath(file))
+    const stream = fs.createReadStream(this._fsPath(file))
     if (signal) addAbortSignal(signal, stream)
 
     return nodeToVFSReadable(stream)
@@ -276,15 +291,15 @@ export class NodeVFS extends VFS<
 
   protected async _removeDir (dir: string, recursive: boolean, _signal?: AbortSignal | undefined) {
     // TODO: handle abort signal
-    await withVFSErr(fs.promises.rm(await ensureDir(this.fsPath(dir)), { recursive }))
+    await withVFSErr(fs.promises.rm(await ensureDir(this._fsPath(dir)), { recursive }))
   }
 
   protected async _removeFile (file: string, _signal?: AbortSignal | undefined) {
-    await withVFSErr(fs.promises.unlink(this.fsPath(file)))
+    await withVFSErr(fs.promises.unlink(this._fsPath(file)))
   }
 
   protected async _stat (file: string) {
-    const stat = await withVFSErr(fs.promises.stat(this.fsPath(file)))
+    const stat = await withVFSErr(fs.promises.stat(this._fsPath(file)))
     const type = getEntryType(stat)
 
     if (!type) {
@@ -298,7 +313,7 @@ export class NodeVFS extends VFS<
   }
 
   protected async _lstat (file: string) {
-    const stat = await withVFSErr(fs.promises.lstat(this.fsPath(file)))
+    const stat = await withVFSErr(fs.promises.lstat(this._fsPath(file)))
     const type = getEntryType(stat)
 
     if (!type) {
@@ -312,35 +327,32 @@ export class NodeVFS extends VFS<
   }
 
   protected async _writeFile (file: string, data: Uint8Array, signal?: AbortSignal | undefined) {
-    await withVFSErr(fs.promises.writeFile(this.fsPath(file), data, { signal }))
+    await withVFSErr(fs.promises.writeFile(this._fsPath(file), data, { signal }))
   }
 
   protected _writeFileStream (file: string, signal?: AbortSignal | undefined) {
-    const stream = fs.createWriteStream(this.fsPath(file))
+    const stream = fs.createWriteStream(this._fsPath(file))
     if (signal) addAbortSignal(signal, stream)
 
     return nodeToVFSWritable(stream)
   }
 
   protected async _truncate (file: string, to: number) {
-    await withVFSErr(fs.promises.truncate(this.fsPath(file), to))
+    await withVFSErr(fs.promises.truncate(this._fsPath(file), to))
   }
 
   protected async _symlink (target: string, link: string) {
-    await withVFSErr(fs.promises.symlink(this.fsPath(target), this.fsPath(link)))
+    await withVFSErr(fs.promises.symlink(this._fsPath(target), this._fsPath(link)))
   }
 
   protected async _realPath (link: string) {
-    const result = await withVFSErr(fs.promises.realpath(this.fsPath(link)))
-    if (path.parse(result).root !== this.root) {
-      throw new VFSError('cannot read link outside root', { code: 'ENOSYS' })
-    }
-    return vfsPath.join(...path.relative(this.base, result).split(path.sep))
+    const result = await withVFSErr(fs.promises.realpath(this._fsPath(link)))
+    return this._relPath(result)
   }
 
   protected async _openFile (file: string, read: boolean, write: boolean) {
     const flags = ['', 'r', 'w', 'w+'][+read | +write << 1]
-    return await NodeVFSFileHandle.open(this.fsPath(file), flags)
+    return await NodeVFSFileHandle.open(this._fsPath(file), flags)
   }
 
   protected async _watch (glob: string, onEvent: VFSWatchCallback, onError: VFSWatchErrorCallback) {
@@ -349,17 +361,21 @@ export class NodeVFS extends VFS<
       fire: onEvent,
       err: onError
     }
-    this.watchCallbacks.add(entry)
-    if (!this.watcher) {
-      this.watcher = await withVFSErr(subscribeWatcher(this.base, this.onWatch))
+    this._watchCallbacks.add(entry)
+    if (!this._watcher) {
+      this._watcher = await withVFSErr(subscribeWatcher(this._base, this.onWatch))
     }
     return async () => {
-      this.watchCallbacks.delete(entry)
-      if (!this.watchCallbacks.size) {
-        const watcher = this.watcher
-        this.watcher = undefined
+      this._watchCallbacks.delete(entry)
+      if (!this._watchCallbacks.size) {
+        const watcher = this._watcher
+        this._watcher = undefined
         await withVFSErr(watcher!.unsubscribe())
       }
     }
+  }
+
+  [Symbol.for('nodejs.util.inspect.custom')] () {
+    return `NodeVFS(${this._base}${this._enforceBase ? ', enforced' : ''})`
   }
 }
