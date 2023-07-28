@@ -1,6 +1,10 @@
 {
   "name": "@socketsecurity/utils",
+  "private": true,
   "version": "1.0.0",
+  "workspaces": [
+    "workspaces/*"
+  ],
   "license": "MIT",
   "description": "Utilities for Socket codebases",
   "author": {
@@ -17,7 +21,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build --workspaces",
     "lint": "eslint ."
   },
   "dependencies": {

@@ -2,7 +2,15 @@
   "name": "@socketsecurity/vfs",
   "version": "1.0.0",
   "license": "MIT",
-  "description": "Extensible virtual filesystem for Node.js and the browser",
+  "description": "Extensible virtual filesystem with streams, random access, and watchers",
+  "main": "lib/index.js",
+  "module": "esm/index.js",
+  "exports": {
+    ".": {
+      "import": "./esm/index.js",
+      "require": "./lib/index.js"
+    }
+  },
   "author": {
     "name": "Socket Inc",
     "email": "eng@socket.dev",
@@ -13,24 +21,10 @@
     "type": "git",
     "url": "git://github.com/SocketDev/socket-sdk-utils.git"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "scripts": {
-    "build": "tsc",
-    "lint": "eslint ."
+    "build": "tsc && tsc -p tsconfig.esm.json"
   },
   "dependencies": {
     "pony-cause": "^2.1.10"
-  },
-  "devDependencies": {
-    "@socketsecurity/eslint-config": "^3.0.1",
-    "@types/node": "^18.17.0",
-    "@typescript-eslint/eslint-plugin": "^5.56.0",
-    "@typescript-eslint/parser": "^5.56.0",
-    "eslint": "^8.45.0",
-    "eslint-import-resolver-typescript": "^3.5.5",
-    "eslint-plugin-import": "^2.27.5",
-    "typescript": "^5.0.4"
   }
 }

@@ -9,6 +9,7 @@ export type VFSErrorCode =
   | 'EPERM'
   | 'EMFILE'
   | 'ENFILE'
+  | 'EBADF'
   | 'EUNKNOWN'
 
 export class VFSError extends ErrorWithCause<Error> {
@@ -42,12 +43,31 @@ export interface VFSStats {
 
 export abstract class VFSFileHandle {
   protected abstract _read (into: Uint8Array, position: number): Promise<number>
-  protected abstract _write (data: Uint8Array, position: number, signal?: AbortSignal): Promise<void>
+  protected abstract _write (data: Uint8Array, position: number): Promise<number>
   protected abstract _truncate (to: number): Promise<void>
   protected abstract _flush (): Promise<void>
   protected abstract _stat (): Promise<VFSStats>
   protected abstract _close (): Promise<void>
 }
+
+export type VFSWatchEventType = 'create' | 'update' | 'delete'
+
+export interface VFSWatchEvent {
+  type: VFSWatchEventType
+  path: string
+}
+
+export type VFSWatchCallback = (event: VFSWatchEvent) => unknown
+export type VFSWatchErrorCallback = (err: VFSError) => unknown
+
+export interface VFSWatcher {
+  onEvent (callback: VFSWatchCallback): this
+  onError (callback: VFSWatchErrorCallback): this
+  events (): AsyncIterableIterator<VFSWatchEvent>
+  unsubscribe (): Promise<void>
+}
+
+export type VFSWatchUnsubscribe = () => Promise<void>
 
 export abstract class VFS<
   B extends Uint8Array = Uint8Array,
@@ -67,9 +87,11 @@ export abstract class VFS<
   protected abstract _truncate (file: string, to: number): Promise<void>
   protected abstract _copyDir (src: string, dst: string, signal?: AbortSignal): Promise<void>
   protected abstract _copyFile (src: string, dst: string, signal?: AbortSignal): Promise<void>
+  protected abstract _openFile (file: string, read: boolean, write: boolean): Promise<VFSFileHandle>
   protected abstract _stat (file: string): Promise<VFSStats>
   protected abstract _lstat (file: string): Promise<VFSStats>
   protected abstract _exists (file: string): Promise<boolean>
+  protected abstract _watch (glob: string, watcher: VFSWatchCallback, onError: VFSWatchErrorCallback): Promise<VFSWatchUnsubscribe>
 
   readDir (dir: string, options?: { withFileTypes?: false }): Promise<string[]>
   readDir (dir: string, options: { withFileTypes: true }): Promise<VFSDirent[]>
@@ -134,6 +156,87 @@ export abstract class VFS<
       }
       throw err
     }
+  }
+
+  async open (file: string, options: { read?: boolean, write?: boolean } = {}) {
+    let read = options.read || options.write == null
+    let write = !!options.write
+
+    return this._openFile(file, read, write)
+  }
+
+  async watch (glob: string): Promise<VFSWatcher> {
+    const callbacks: VFSWatchCallback[] = []
+    const errCallbacks: VFSWatchErrorCallback[] = []
+    let done = false
+
+    const finish = () => {
+      done = true
+      callbacks.length = 0
+      errCallbacks.length = 0
+      unsub = () => Promise.resolve()
+    }
+
+    let unsub = await this._watch(
+      glob,
+      evt => {
+        for (const cb of callbacks) cb(evt)
+      },
+      err => {
+        for (const cb of errCallbacks) cb(err)
+        finish()
+      }
+    )
+
+    const watcher: VFSWatcher = {
+      onEvent (cb: VFSWatchCallback) {
+        if (!done) callbacks.push(cb)
+        return watcher
+      },
+      onError (cb: VFSWatchErrorCallback) {
+        if (!done) errCallbacks.push(cb)
+        return watcher
+      },
+      async * events () {
+        if (done) return
+
+        let results: VFSWatchEvent[] = []
+
+        let curResolve!: () => void
+        let curReject!: (err: Error) => void
+        let next = new Promise<void>((res, rej) => {
+          curResolve = res
+          curReject = rej
+        })
+        callbacks.push(evt => {
+          curResolve()
+          results.push(evt)
+          next = new Promise<void>((res, rej) => {
+            curResolve = res
+            curReject = rej
+          })
+        })
+        errCallbacks.push(err => {
+          curReject(err)
+        })
+
+        while (!done) {
+          if (!results.length) await next
+          const oldResults = results
+          results = []
+          yield * oldResults
+        }
+      },
+      async unsubscribe () {
+        try {
+          await unsub()
+        } finally {
+          finish()
+        }
+      }
+    }
+
+    return watcher
   }
 
   stat (file: string) {

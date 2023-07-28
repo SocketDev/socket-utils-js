@@ -1,10 +1,13 @@
 {
   "extends": "../../shared/tsconfig.base.json",
   "compilerOptions": {
-    "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs",
+    "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs-node",
     "rootDir": "src",
     "outDir": "lib"
   },
   "include": ["src"],
-  "exclude": []
+  "exclude": [],
+  "references": [{
+    "path": "../vfs"
+  }]
 }

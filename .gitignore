@@ -1,2 +1,4 @@
 node_modules
-/vfs
+lib/
+esm/
+/shared/tsbuildinfo

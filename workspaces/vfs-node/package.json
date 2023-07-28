@@ -1,0 +1,45 @@
+{
+  "name": "@socketsecurity/vfs-node",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "Node.js implementation of @socketsecurity/vfs",
+  "main": "lib/index.js",
+  "module": "esm/index.js",
+  "exports": {
+    ".": {
+      "import": {
+        "default": "./esm/index.js",
+        "types": "./esm/index.d.ts"
+      },
+      "require": {
+        "default": "./lib/index.js",
+        "types": "./lib/index.d.ts"
+      }
+    }
+  },
+  "author": {
+    "name": "Socket Inc",
+    "email": "eng@socket.dev",
+    "url": "https://socket.dev"
+  },
+  "homepage": "https://github.com/SocketDev/socket-utils-js",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/SocketDev/socket-sdk-utils.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.esm.json"
+  },
+  "dependencies": {
+    "@parcel/watcher": "^2.2.0",
+    "@socketsecurity/vfs": "^1.0.0",
+    "micromatch": "^4.0.5",
+    "@types/node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/micromatch": "^4.0.2"
+  }
+}

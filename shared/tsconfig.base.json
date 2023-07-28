@@ -5,10 +5,8 @@
     "module": "node16",
     "moduleResolution": "node16",
     "strict": true,
-    "strictNullChecks": true,
-    "rootDir": "src",
-    "outDir": "."
-  },
-  "include": ["src"],
-  "exclude": []
+    "forceConsistentCasingInFileNames": true,
+    "declarationMap": true,
+    "composite": true
+  }
 }
