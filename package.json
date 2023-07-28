@@ -24,5 +24,17 @@
     "build": "npm run build --workspaces",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
+  },
+  "dependencies": {
+    "pony-cause": "^2.1.10"
+  },
+  "devDependencies": {
+    "@socketsecurity/eslint-config": "^3.0.1",
+    "@typescript-eslint/eslint-plugin": "^5.56.0",
+    "@typescript-eslint/parser": "^5.56.0",
+    "eslint": "^8.45.0",
+    "eslint-import-resolver-typescript": "^3.5.5",
+    "eslint-plugin-import": "^2.27.5",
+    "typescript": "^5.0.4"
   }
 }

@@ -11,7 +11,10 @@ import type {
   AsyncSubscription as WatcherSubscription,
   Event as WatchEvent
 } from '@parcel/watcher'
-import type { VFSWriteStream, VFSDirent, VFSEntryType, VFSErrorCode, VFSReadStream, VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
+import type {
+  VFSWriteStream, VFSDirent, VFSEntryType, VFSErrorCode,
+  VFSReadStream, VFSWatchCallback, VFSWatchErrorCallback
+} from '@socketsecurity/vfs'
 import type { FileHandle } from 'node:fs/promises'
 import type { WritableStream as NodeWritableStream } from 'node:stream/web'
 
@@ -218,7 +221,11 @@ export default class NodeVFS extends VFS<
 
   protected async _copyDir (src: string, dst: string, _signal?: AbortSignal | undefined) {
     // TODO: handle abort signal
-    await withVFSErr(fs.promises.cp(await ensureDir(this.fsPath(src)), this.fsPath(dst), { recursive: true }))
+    await withVFSErr(fs.promises.cp(
+      await ensureDir(this.fsPath(src)),
+      this.fsPath(dst),
+      { recursive: true }
+    ))
   }
 
   protected async _copyFile (src: string, dst: string, _signal?: AbortSignal | undefined) {

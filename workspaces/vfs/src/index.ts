@@ -78,11 +78,23 @@ export abstract class VFS<
   protected abstract _readDirent (dir: string): Promise<VFSDirent[]>
   protected abstract _readFile (file: string, signal?: AbortSignal): Promise<B>
   protected abstract _readFileStream (file: string, signal?: AbortSignal): R
-  protected abstract _removeDir (dir: string, recursive: boolean, signal?: AbortSignal): Promise<void>
+  protected abstract _removeDir (
+    dir: string,
+    recursive: boolean,
+    signal?: AbortSignal
+  ): Promise<void>
   protected abstract _removeFile (file: string, signal?: AbortSignal): Promise<void>
-  protected abstract _appendFile (file: string, data: Uint8Array, signal?: AbortSignal): Promise<void>
+  protected abstract _appendFile (
+    file: string,
+    data: Uint8Array,
+    signal?: AbortSignal
+  ): Promise<void>
   protected abstract _appendFileStream (file: string, signal?: AbortSignal): W
-  protected abstract _writeFile (file: string, data: Uint8Array, signal?: AbortSignal): Promise<void>
+  protected abstract _writeFile (
+    file: string,
+    data: Uint8Array,
+    signal?: AbortSignal
+  ): Promise<void>
   protected abstract _writeFileStream (file: string, signal?: AbortSignal): W
   protected abstract _truncate (file: string, to: number): Promise<void>
   protected abstract _copyDir (src: string, dst: string, signal?: AbortSignal): Promise<void>
@@ -91,7 +103,11 @@ export abstract class VFS<
   protected abstract _stat (file: string): Promise<VFSStats>
   protected abstract _lstat (file: string): Promise<VFSStats>
   protected abstract _exists (file: string): Promise<boolean>
-  protected abstract _watch (glob: string, watcher: VFSWatchCallback, onError: VFSWatchErrorCallback): Promise<VFSWatchUnsubscribe>
+  protected abstract _watch (
+    glob: string,
+    watcher: VFSWatchCallback,
+    onError: VFSWatchErrorCallback
+  ): Promise<VFSWatchUnsubscribe>
 
   readDir (dir: string, options?: { withFileTypes?: false }): Promise<string[]>
   readDir (dir: string, options: { withFileTypes: true }): Promise<VFSDirent[]>
@@ -127,12 +143,20 @@ export abstract class VFS<
     }
   }
 
-  writeFile (file: string, data: Uint8Array, options: { append?: boolean, signal?: AbortSignal } = {}) {
-    return options.append ? this._appendFile(file, data, options.signal) : this._writeFile(file, data, options.signal)
+  writeFile (
+    file: string,
+    data: Uint8Array,
+    options: { append?: boolean, signal?: AbortSignal } = {}
+  ) {
+    return options.append
+      ? this._appendFile(file, data, options.signal)
+      : this._writeFile(file, data, options.signal)
   }
 
   writeFileStream (file: string, options: { append?: boolean, signal?: AbortSignal } = {}) {
-    return options.append ? this._appendFileStream(file, options.signal) : this._writeFileStream(file, options.signal)
+    return options.append
+      ? this._appendFileStream(file, options.signal)
+      : this._writeFileStream(file, options.signal)
   }
 
   truncate (file: string, to = 0) {

@@ -9,6 +9,7 @@
   },
   "overrides": [],
   "rules": {
+    "max-len": ["error", { "code": 100 }],
     "@typescript-eslint/no-misused-promises": "warn",
     "@typescript-eslint/no-floating-promises": "warn",
     "@typescript-eslint/quotes": [
