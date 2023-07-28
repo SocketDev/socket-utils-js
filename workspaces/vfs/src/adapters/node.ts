@@ -3,8 +3,7 @@ import * as path from 'node:path'
 import { Readable, Writable, addAbortSignal } from 'node:stream'
 import { ReadableStream as NodeReadableStream } from 'node:stream/web'
 
-import { VFS, VFSError } from '..'
-import * as vfsPath from '../path'
+import { VFS, VFSError, path as vfsPath } from '..'
 
 import type { VFSWriteStream, VFSDirent, VFSEntryType, VFSErrorCode, VFSReadStream } from '..'
 import type { WritableStream as NodeWritableStream } from 'node:stream/web'
@@ -69,11 +68,11 @@ const getEntryType = (entry: {
 }
 
 // needed for error wrapping vs Readable.toWeb
-const nodeToVFSReadable = (stream: Readable): VFSReadStream => {
+const nodeToVFSReadable = (stream: Readable): VFSReadStream<Buffer> => {
   const webStream = new NodeReadableStream({
     start (c) {
       stream.on('data', chunk => {
-        c.enqueue(chunk as Uint8Array)
+        c.enqueue(chunk as Buffer)
         if ((c.desiredSize || 0) <= 0) stream.pause()
       })
       stream.on('error', err => {
@@ -87,7 +86,7 @@ const nodeToVFSReadable = (stream: Readable): VFSReadStream => {
     cancel (reason) { stream.destroy(reason) }
   }, { highWaterMark: stream.readableHighWaterMark })
   // cast basically assumes all Node Readable streams will have Node.js' extensions
-  return webStream as VFSReadStream
+  return webStream as VFSReadStream<Buffer>
 }
 
 const nodeToVFSWritable = (stream: Writable): VFSWriteStream => {
@@ -98,7 +97,9 @@ const nodeToVFSWritable = (stream: Writable): VFSWriteStream => {
   return webStream
 }
 
-export default class NodeVFS extends VFS<Buffer> {
+export default class NodeVFS extends VFS<
+  Buffer
+> {
   private base: string
   private enforceBase: boolean
 
@@ -228,5 +229,9 @@ export default class NodeVFS extends VFS<Buffer> {
     if (signal) addAbortSignal(signal, stream)
 
     return nodeToVFSWritable(stream)
+  }
+
+  protected async _truncate (file: string, to: number): Promise<void> {
+    await withVFSErr(fs.promises.truncate(this.fsPath(file), to))
   }
 }

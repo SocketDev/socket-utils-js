@@ -24,7 +24,7 @@ export class VFSError extends ErrorWithCause<Error> {
   }
 }
 
-export interface VFSReadStream extends ReadableStream<Uint8Array> {}
+export interface VFSReadStream<B extends Uint8Array = Uint8Array> extends ReadableStream<B> {}
 
 export interface VFSWriteStream extends WritableStream<Uint8Array> {}
 
@@ -40,9 +40,18 @@ export interface VFSStats {
   type: VFSEntryType
 }
 
+export abstract class VFSFileHandle {
+  protected abstract _read (into: Uint8Array, position: number): Promise<number>
+  protected abstract _write (data: Uint8Array, position: number, signal?: AbortSignal): Promise<void>
+  protected abstract _truncate (to: number): Promise<void>
+  protected abstract _flush (): Promise<void>
+  protected abstract _stat (): Promise<VFSStats>
+  protected abstract _close (): Promise<void>
+}
+
 export abstract class VFS<
   B extends Uint8Array = Uint8Array,
-  R extends VFSReadStream = VFSReadStream,
+  R extends VFSReadStream<B> = VFSReadStream<B>,
   W extends VFSWriteStream = VFSWriteStream
 > {
   protected abstract _readDir (dir: string): Promise<string[]>
@@ -55,6 +64,7 @@ export abstract class VFS<
   protected abstract _appendFileStream (file: string, signal?: AbortSignal): W
   protected abstract _writeFile (file: string, data: Uint8Array, signal?: AbortSignal): Promise<void>
   protected abstract _writeFileStream (file: string, signal?: AbortSignal): W
+  protected abstract _truncate (file: string, to: number): Promise<void>
   protected abstract _copyDir (src: string, dst: string, signal?: AbortSignal): Promise<void>
   protected abstract _copyFile (src: string, dst: string, signal?: AbortSignal): Promise<void>
   protected abstract _stat (file: string): Promise<VFSStats>
@@ -101,6 +111,10 @@ export abstract class VFS<
 
   writeFileStream (file: string, options: { append?: boolean, signal?: AbortSignal } = {}) {
     return options.append ? this._appendFileStream(file, options.signal) : this._writeFileStream(file, options.signal)
+  }
+
+  truncate (file: string, to = 0) {
+    return this._truncate(file, to)
   }
 
   copyDir (src: string, dst: string, options: { signal?: AbortSignal } = {}) {
