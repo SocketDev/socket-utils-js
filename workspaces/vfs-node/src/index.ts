@@ -36,6 +36,7 @@ const allowedErrorTypes = new Set([
   'EMFILE',
   'ENFILE',
   'EBADF',
+  'EINVAL',
   'EUNKNOWN'
 ])
 
@@ -165,20 +166,19 @@ type WatchCallback = {
   err: VFSWatchErrorCallback
 }
 
-export default class NodeVFS extends VFS<
+export class NodeVFS extends VFS<
   Buffer
 > {
   private base: string
+  private root: string
   private enforceBase: boolean
   private watchCallbacks: Set<WatchCallback>
   private watcher?: WatcherSubscription
 
   constructor (basePath?: string, lockToRoot = true) {
     super()
-    this.base = basePath ? path.resolve(basePath) : path.parse(process.cwd()).root
-    if (this.base.endsWith(path.sep)) {
-      this.base = this.base.slice(0, this.base.length - path.sep.length)
-    }
+    this.base = path.resolve(basePath ?? '.')
+    this.root = path.parse(this.base).root
     this.enforceBase = lockToRoot
     this.watchCallbacks = new Set()
   }
@@ -189,7 +189,7 @@ export default class NodeVFS extends VFS<
     if (this.enforceBase && rel[0] === '..') {
       throw new VFSError('path outside base directory', { code: 'EPERM' })
     }
-    return `${this.base}${path.sep}${rel.join(path.sep)}`
+    return path.join(this.base, ...rel)
   }
 
   private onWatch (err: Error | null, events: WatchEvent[]) {
@@ -322,8 +322,20 @@ export default class NodeVFS extends VFS<
     return nodeToVFSWritable(stream)
   }
 
-  protected async _truncate (file: string, to: number): Promise<void> {
+  protected async _truncate (file: string, to: number) {
     await withVFSErr(fs.promises.truncate(this.fsPath(file), to))
+  }
+
+  protected async _symlink (target: string, link: string) {
+    await withVFSErr(fs.promises.symlink(this.fsPath(target), this.fsPath(link)))
+  }
+
+  protected async _realPath (link: string) {
+    const result = await withVFSErr(fs.promises.realpath(this.fsPath(link)))
+    if (path.parse(result).root !== this.root) {
+      throw new VFSError('cannot read link outside root', { code: 'ENOSYS' })
+    }
+    return vfsPath.join(...path.relative(this.base, result).split(path.sep))
   }
 
   protected async _openFile (file: string, read: boolean, write: boolean) {

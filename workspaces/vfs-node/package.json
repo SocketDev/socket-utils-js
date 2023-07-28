@@ -31,7 +31,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.esm.json"
+    "build": "tsc -b && tsc -b tsconfig.esm.json"
   },
   "dependencies": {
     "@parcel/watcher": "^2.2.0",

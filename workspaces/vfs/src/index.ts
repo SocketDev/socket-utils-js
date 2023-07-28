@@ -10,6 +10,7 @@ export type VFSErrorCode =
   | 'EMFILE'
   | 'ENFILE'
   | 'EBADF'
+  | 'EINVAL'
   | 'EUNKNOWN'
 
 export class VFSError extends ErrorWithCause<Error> {
@@ -103,6 +104,8 @@ export abstract class VFS<
   protected abstract _stat (file: string): Promise<VFSStats>
   protected abstract _lstat (file: string): Promise<VFSStats>
   protected abstract _exists (file: string): Promise<boolean>
+  protected abstract _symlink (target: string, link: string): Promise<void>
+  protected abstract _realPath (link: string): Promise<string>
   protected abstract _watch (
     glob: string,
     watcher: VFSWatchCallback,
@@ -271,6 +274,14 @@ export abstract class VFS<
 
   exists (file: string) {
     return this._exists(file)
+  }
+
+  realPath (link: string) {
+    return this._realPath(link)
+  }
+
+  symlink (src: string, dst: string) {
+    return this._symlink(src, dst)
   }
 }
 

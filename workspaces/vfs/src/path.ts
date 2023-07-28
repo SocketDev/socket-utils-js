@@ -46,3 +46,10 @@ export function relative (from: string, to: string) {
   }
   return result.slice(0, -1)
 }
+
+export function dirname (path: string) {
+  const resolved = normalize(path)
+  const lastSlash = resolved.lastIndexOf('/')
+  if (lastSlash === -1) return '.'
+  return resolved.slice(0, lastSlash)
+}
