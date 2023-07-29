@@ -146,8 +146,8 @@ class NodeVFSFileHandle extends VFSFileHandle {
     await withVFSErr(this._handle.close())
   }
 
-  static async open (filepath: string, flags: string) {
-    const handle = await withVFSErr(fs.promises.open(filepath, flags))
+  static async open (filepath: string, flag: number) {
+    const handle = await withVFSErr(fs.promises.open(filepath, flag))
     return new NodeVFSFileHandle(handle)
   }
 
@@ -346,9 +346,18 @@ export class NodeVFS extends VFS<
     return this._relPath(result)
   }
 
-  protected async _openFile (file: string, read: boolean, write: boolean) {
-    const flags = ['', 'r', 'w', 'w+'][+read | +write << 1]
-    return await NodeVFSFileHandle.open(file, flags)
+  protected async _openFile (file: string, read: boolean, write: boolean, truncate: boolean) {
+    let flag = write
+      ? read
+        ? fs.constants.O_RDWR | fs.constants.O_CREAT
+        : fs.constants.O_WRONLY | fs.constants.O_CREAT
+      : fs.constants.O_RDONLY
+
+    if (truncate) {
+      flag |= fs.constants.O_TRUNC
+    }
+
+    return await NodeVFSFileHandle.open(file, flag)
   }
 
   protected async _watch (glob: string, onEvent: VFSWatchCallback, onError: VFSWatchErrorCallback) {

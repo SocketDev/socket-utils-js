@@ -1,10 +1,11 @@
 /// <reference types="wicg-file-system-access" />
-import { VFS, VFSError, VFSErrorCode, VFSFileHandle, VFSStats, VFSWriteStream, path as vfsPath } from '@socketsecurity/vfs'
+import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
 
-// many 2020ish browsers don't have throwIfAborted
+import type { VFSDirent, VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
+
+// need to wrap with wrapVFSErr
 const throwIfAborted = (signal?: AbortSignal) => {
-  if (signal?.throwIfAborted) signal.throwIfAborted()
-  else if (signal?.aborted) {
+  if (signal?.aborted) {
     throw wrapVFSErr(signal.reason)
   }
 }
@@ -13,7 +14,7 @@ const wrapVFSErr = (err: unknown) => {
   if (!(err instanceof Error)) {
     return new VFSError(`${err}`)
   }
-  if (err.name === 'AbortError') return err
+  if (err.name === 'AbortError' || err.name === 'VFSError') return err
   if (err.name === 'NotFoundError') {
     return new VFSError('no such file or directory', { code: 'ENOENT', cause: err })
   }
@@ -24,21 +25,30 @@ const wrapVFSErr = (err: unknown) => {
 }
 
 const wrapWriteStream = (
-  gen: () => Promise<WritableStream<Uint8Array>>
+  gen: () => Promise<WritableStream<Uint8Array>>,
+  signal?: AbortSignal
 ): WritableStream<Uint8Array> => {
   let resolveWriter!: (writer: WritableStreamDefaultWriter<Uint8Array>) => void
   const writerPromise = new Promise<WritableStreamDefaultWriter<Uint8Array>>(resolve => {
     resolveWriter = resolve
   })
 
+  throwIfAborted(signal)
+
   return new WritableStream({
     async start (controller) {
+      let inner: WritableStream | undefined
       try {
-        const inner = await gen()
+        inner = await gen()
+        throwIfAborted(signal)
         const writer = inner.getWriter()
+        signal?.addEventListener('abort', () => {
+          writer.abort(wrapVFSErr(signal.reason)).catch(() => {})
+        })
         resolveWriter(writer)
       } catch (err) {
         controller.error(err)
+        await inner?.abort(err).catch(() => {})
       }
     },
     async write (chunk) {
@@ -54,22 +64,31 @@ const wrapWriteStream = (
 }
 
 const wrapReadStream = (
-  gen: () => Promise<ReadableStream<Uint8Array>>
+  gen: () => Promise<ReadableStream<Uint8Array>>,
+  signal?: AbortSignal
 ): ReadableStream<Uint8Array> => {
   let resolveReader!: (writer: ReadableStreamDefaultReader<Uint8Array>) => void
   const readerPromise = new Promise<ReadableStreamDefaultReader<Uint8Array>>(resolve => {
     resolveReader = resolve
   })
 
+  throwIfAborted(signal)
+
   return new ReadableStream({
     async start (controller) {
+      let inner: ReadableStream | undefined
       try {
-        const inner = await gen()
+        inner = await gen()
+        throwIfAborted(signal)
         // TODO: Chromium doesn't seem to support BYOB readers for files
         const reader = inner.getReader()
+        signal?.addEventListener('abort', () => {
+          reader.cancel(wrapVFSErr(signal.reason)).catch(() => {})
+        })
         resolveReader(reader)
       } catch (err) {
         controller.error(err)
+        await inner?.cancel(err).catch(() => {})
       }
     },
     async pull (controller) {
@@ -94,12 +113,12 @@ const withVFSErr = <T>(promise: Promise<T>) => promise.catch(err => {
 class FSAccessVFSFileHandle extends VFSFileHandle {
   private _handle: FileSystemFileHandle
   private _file: File
-  private _writable: FileSystemWritableFileStream
+  private _writable?: FileSystemWritableFileStream
 
   private constructor (
     handle: FileSystemFileHandle,
     file: File,
-    writable: FileSystemWritableFileStream
+    writable?: FileSystemWritableFileStream
   ) {
     super()
     this._handle = handle
@@ -108,12 +127,16 @@ class FSAccessVFSFileHandle extends VFSFileHandle {
   }
 
   protected async _close () {
-    await withVFSErr(this._writable.close())
+    if (this._writable) {
+      await withVFSErr(this._writable.close())
+    }
   }
 
   protected async _flush (): Promise<void> {
-    await withVFSErr(this._writable.close())
-    this._writable = await withVFSErr(this._handle.createWritable({ keepExistingData: true }))
+    if (this._writable) {
+      await withVFSErr(this._writable.close())
+      this._writable = await withVFSErr(this._handle.createWritable({ keepExistingData: true }))
+    }
   }
 
   protected async _read (into: Uint8Array, position: number) {
@@ -131,6 +154,11 @@ class FSAccessVFSFileHandle extends VFSFileHandle {
   }
 
   protected async _truncate (to: number) {
+    if (!this._writable) {
+      throw new VFSError('cannot write to readonly file', {
+        code: 'EINVAL'
+      })
+    }
     await withVFSErr(this._writable.write({
       type: 'truncate',
       size: to
@@ -138,6 +166,11 @@ class FSAccessVFSFileHandle extends VFSFileHandle {
   }
 
   protected async _write (data: Uint8Array, position: number) {
+    if (!this._writable) {
+      throw new VFSError('cannot write to readonly file', {
+        code: 'EINVAL'
+      })
+    }
     await withVFSErr(this._writable.write({
       type: 'write',
       data,
@@ -146,13 +179,23 @@ class FSAccessVFSFileHandle extends VFSFileHandle {
     return data.byteLength
   }
 
-  static async open (handle: FileSystemFileHandle) {
-    const [file, writable] = await withVFSErr(Promise.all([
-      handle.getFile(),
-      handle.createWritable({ keepExistingData: true })
-    ]))
+  static async open (
+    handle: FileSystemFileHandle,
+    write: boolean,
+    truncate: boolean
+  ) {
+    let w: Promise<WritableStream> | undefined
+    try {
+      const [file, writable] = await withVFSErr(Promise.all([
+        handle.getFile(),
+        w = write ? handle.createWritable({ keepExistingData: !truncate }) : undefined
+      ]))
 
-    return new FSAccessVFSFileHandle(handle, file, writable)
+      return new FSAccessVFSFileHandle(handle, file, writable)
+    } catch (err) {
+      await w?.then(s => s.abort(err)).catch(() => {})
+      throw err
+    }
   }
 }
 
@@ -171,6 +214,9 @@ export class FSAccessVFS extends VFS {
       throw new VFSError('cannot traverse single-file filesystem', { code: 'ENOTDIR' })
     }
     const parts = normalized.split('/')
+    if (parts[0] === '..') {
+      throw new VFSError('cannot traverse out of root directory', { code: 'EPERM' })
+    }
     let curDir = this._root
     for (let i = 0; i < parts.length - 1; ++i) {
       try {
@@ -223,39 +269,45 @@ export class FSAccessVFS extends VFS {
 
   protected async _appendFile (file: string, data: Uint8Array, signal?: AbortSignal | undefined) {
     const f = await this._file(file, true)
-    const [fileObj, writable] = await withVFSErr(Promise.all([
-      f.getFile(),
-      f.createWritable({ keepExistingData: true })
-    ]))
-    if (signal) {
-      throwIfAborted(signal)
-      signal.addEventListener('abort', err => {
-        writable.abort(wrapVFSErr(err))
-      }, { once: true })
+    let w: Promise<WritableStream> | undefined
+    try {
+      const [fileObj, writable] = await withVFSErr(Promise.all([
+        f.getFile(),
+        w = f.createWritable({ keepExistingData: true })
+      ]))
+      if (signal) {
+        throwIfAborted(signal)
+        signal.addEventListener('abort', () => {
+          writable.abort(signal.reason)
+        }, { once: true })
+      }
+      await withVFSErr(writable.write({
+        type: 'write',
+        position: fileObj.size,
+        data
+      }))
+      await withVFSErr(writable.close())
+    } catch (err) {
+      await w?.then(stream => stream.abort(err)).catch(() => {})
     }
-    await withVFSErr(writable.write({
-      type: 'write',
-      position: fileObj.size,
-      data
-    }))
   }
 
   protected _appendFileStream (file: string, signal?: AbortSignal | undefined) {
     return wrapWriteStream(async () => {
       const f = await this._file(file, true)
-      const [fileObj, writable] = await withVFSErr(Promise.all([
-        f.getFile(),
-        f.createWritable({ keepExistingData: true })
-      ]))
-      if (signal) {
-        throwIfAborted(signal)
-        signal.addEventListener('abort', err => {
-          writable.abort(wrapVFSErr(err))
-        }, { once: true })
+      let w: Promise<WritableStream> | undefined
+      try {
+        const [fileObj, writable] = await withVFSErr(Promise.all([
+          f.getFile(),
+          w = f.createWritable({ keepExistingData: true })
+        ]))
+        await withVFSErr(writable.seek(fileObj.size))
+        return writable
+      } catch (err) {
+        await w?.then(w => w.abort(err)).catch(() => {})
+        throw err
       }
-      await withVFSErr(writable.seek(fileObj.size))
-      return writable
-    })
+    }, signal)
   }
 
   protected async _copyFileRaw (
@@ -263,16 +315,28 @@ export class FSAccessVFS extends VFS {
     dst: FileSystemFileHandle,
     signal?: AbortSignal
   ) {
-    const [srcFile, dstStream] = await withVFSErr(
-      Promise.all([src.getFile(), dst.createWritable()])
-    )
-    await withVFSErr(srcFile.stream().pipeTo(dstStream, { signal }))
+    throwIfAborted(signal)
+    let srcRead: Promise<ReadableStream> | undefined
+    let tgtWrite: Promise<WritableStream> | undefined
+    try {
+      // if either of these promises fail, must close the other in finally block
+      const [srcStream, dstStream] = await Promise.all([
+        srcRead = src.getFile().then(s => s.stream()),
+        tgtWrite = dst.createWritable()
+      ])
+      await srcStream.pipeTo(dstStream, { signal })
+    } catch (err) {
+      await Promise.all([
+        srcRead?.then(s => s.cancel(err)),
+        tgtWrite?.then(w => w.abort(err))
+      ]).catch(() => {})
+    }
   }
 
   protected async _copyFile (src: string, dst: string, signal?: AbortSignal | undefined) {
     const [srcFile, dstFile] = await Promise.all([this._file(src), this._file(dst, true)])
 
-    return this._copyFileRaw(srcFile, dstFile, signal)
+    return await withVFSErr(this._copyFileRaw(srcFile, dstFile, signal))
   }
 
   protected async _copyDirRecurse (
@@ -280,20 +344,23 @@ export class FSAccessVFS extends VFS {
     dst: FileSystemDirectoryHandle,
     ctrl: AbortController
   ) {
+    throwIfAborted(ctrl.signal)
     const copies: Promise<void>[] = []
 
     try {
       for await (const [name, sub] of src.entries()) {
+        throwIfAborted(ctrl.signal)
         const copy = sub.kind === 'file'
-          ? this._copyFileRaw(sub, await dst.getFileHandle(name, { create: true }), ctrl.signal)
-          : this._copyDirRecurse(sub, await dst.getDirectoryHandle(name, { create: true }), ctrl)
+          ? dst.getFileHandle(name, { create: true })
+            .then(f => this._copyFileRaw(sub, f, ctrl.signal))
+          : dst.getDirectoryHandle(name, { create: true })
+            .then(d => this._copyDirRecurse(sub, d, ctrl))
         copies.push(copy)
       }
+      await Promise.all(copies)
     } catch (err) {
       ctrl.abort(wrapVFSErr(err))
     }
-
-    await Promise.all(copies)
   }
 
   protected async _copyDir (src: string, dst: string, signal?: AbortSignal | undefined) {
@@ -301,7 +368,7 @@ export class FSAccessVFS extends VFS {
 
     throwIfAborted(signal)
     const ctrl = new AbortController()
-    signal?.addEventListener('abort', reason => ctrl.abort(reason), { once: true })
+    signal?.addEventListener('abort', () => ctrl.abort(signal.reason), { once: true })
 
     await this._copyDirRecurse(srcDir, dstDir, ctrl)
   }
@@ -319,7 +386,156 @@ export class FSAccessVFS extends VFS {
     return this._stat(file)
   }
 
-  protected async _openFile (file: string, _read: boolean, _write: boolean) {
-    return await FSAccessVFSFileHandle.open(await this._file(file))
+  protected async _openFile (file: string, _read: boolean, write: boolean, truncate: boolean) {
+    // always must open for read to stat
+    return await FSAccessVFSFileHandle.open(
+      await this._file(file),
+      write,
+      truncate
+    )
+  }
+
+  protected async _readDir (dir: string) {
+    const names: string[] = []
+    const vfsDir = await this._dir(dir)
+
+    try {
+      for await (const name of vfsDir.keys()) {
+        names.push(name)
+      }
+    } catch (err) {
+      throw wrapVFSErr(err)
+    }
+
+    return names
+  }
+
+  protected async _readDirent (dir: string) {
+    const dirents: VFSDirent[] = []
+    const vfsDir = await this._dir(dir)
+
+    try {
+      for await (const [name, entry] of vfsDir.entries()) {
+        dirents.push({
+          name,
+          type: entry.kind === 'file' ? 'file' : 'dir'
+        })
+      }
+    } catch (err) {
+      throw wrapVFSErr(err)
+    }
+
+    return dirents
+  }
+
+  protected async _readFile (file: string, _signal?: AbortSignal | undefined) {
+    const vfsFile = await this._file(file)
+
+    // No extra error handling needed here because only the file itself can cause an error
+    const buf = await withVFSErr(vfsFile.getFile().then(f => f.arrayBuffer()))
+
+    return new Uint8Array(buf)
+  }
+
+  protected _readFileStream (file: string, signal?: AbortSignal | undefined) {
+    return wrapReadStream(async () => {
+      const vfsFile = await this._file(file)
+      return await withVFSErr(vfsFile.getFile().then(f => f.stream()))
+    }, signal)
+  }
+
+  protected async _realPath (link: string) {
+    await this._locate(link)
+    // no symlinks here
+    return vfsPath.normalize(link)
+  }
+
+  protected async _removeDir (dir: string, recursive: boolean, _signal?: AbortSignal | undefined) {
+    const loc = await this._locate(dir)
+    if (!loc) {
+      throw new VFSError('cannot remove root', { code: 'EPERM' })
+    }
+
+    try {
+      await loc.parent.getDirectoryHandle(loc.name)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TypeMismatchError') {
+        throw new VFSError('not a directory', { code: 'ENOTDIR', cause: err })
+      }
+      throw wrapVFSErr(err)
+    }
+
+    await loc.parent.removeEntry(loc.name, { recursive })
+  }
+
+  protected async _removeFile (file: string, signal?: AbortSignal | undefined) {
+    const loc = await this._locate(file)
+    if (!loc) {
+      throw new VFSError('cannot remove root', { code: 'EPERM' })
+    }
+
+    try {
+      await loc.parent.getFileHandle(loc.name)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TypeMismatchError') {
+        throw new VFSError('not a file', { code: 'EISDIR', cause: err })
+      }
+      throw wrapVFSErr(err)
+    }
+
+    await loc.parent.removeEntry(loc.name)
+  }
+
+  protected async _stat (file: string) {
+    const loc = await this._locate(file)
+    if (!loc) {
+      return this._root.kind === 'directory'
+        ? { type: 'dir' as const, size: 0 }
+        : { type: 'file' as const, size: (await this._root.getFile()).size }
+    }
+    try {
+      const entry = await loc.parent.getFileHandle(loc.name)
+      return {
+        type: 'file' as const,
+        size: (await entry.getFile()).size
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TypeMismatchError') {
+        return { type: 'dir' as const, size: 0 }
+      }
+      throw wrapVFSErr(err)
+    }
+  }
+
+  protected async _symlink (_target: string, _link: string) {
+    throw new VFSError('symlinks not supported in FS Access API', { code: 'ENOSYS' })
+  }
+
+  protected async _truncate (file: string, to: number) {
+    const f = await this._file(file)
+    const writable = await withVFSErr(f.createWritable())
+    // TODO: surely this closes the stream if this errors? if not we need a try block
+    await withVFSErr(writable.truncate(to))
+  }
+
+  protected async _watch (
+    _glob: string,
+    _watcher: VFSWatchCallback,
+    _onError: VFSWatchErrorCallback
+  ): Promise<never> {
+    throw new VFSError('watching not supported in FS Access API', { code: 'ENOSYS' })
+  }
+
+  protected async _writeFile (file: string, data: Uint8Array, signal?: AbortSignal | undefined) {
+    const f = await this._file(file, true)
+    const writable = await withVFSErr(f.createWritable())
+    await writable.write(data)
+  }
+
+  protected _writeFileStream (file: string, signal?: AbortSignal | undefined) {
+    return wrapWriteStream(async () => {
+      const f = await this._file(file, true)
+      return await withVFSErr(f.createWritable())
+    }, signal)
   }
 }

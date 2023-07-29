@@ -22,6 +22,7 @@ export class VFSError extends ErrorWithCause<Error> {
   } = {}) {
     const code = options.code ?? 'EUNKNOWN'
     super(`${code}: ${message}`, { cause: options.cause })
+    this.name = 'VFSError'
     this.code = code
   }
 }
@@ -142,7 +143,12 @@ export abstract class VFS<
   protected abstract _truncate (file: string, to: number): Promise<void>
   protected abstract _copyDir (src: string, dst: string, signal?: AbortSignal): Promise<void>
   protected abstract _copyFile (src: string, dst: string, signal?: AbortSignal): Promise<void>
-  protected abstract _openFile (file: string, read: boolean, write: boolean): Promise<VFSFileHandle>
+  protected abstract _openFile (
+    file: string,
+    read: boolean,
+    write: boolean,
+    truncate: boolean
+  ): Promise<VFSFileHandle>
   protected abstract _stat (file: string): Promise<VFSStats>
   protected abstract _lstat (file: string): Promise<VFSStats>
   protected abstract _exists (file: string): Promise<boolean>
@@ -227,8 +233,13 @@ export abstract class VFS<
     }
   }
 
-  async open (file: string, options: { read?: boolean, write?: boolean } = {}) {
-    return this._openFile(file, options.read || options.write == null, !!options.write)
+  async open (file: string, options: { read?: boolean, write?: boolean, truncate?: boolean } = {}) {
+    return this._openFile(
+      file,
+      options.read || options.write == null,
+      !!options.write,
+      !!options.write && (options.truncate == null || options.truncate)
+    )
   }
 
   async watch (glob: string): Promise<VFSWatcher> {
