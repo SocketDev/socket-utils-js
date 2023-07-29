@@ -1,11 +1,10 @@
 {
-  "name": "@socketsecurity/vfs",
+  "name": "@socketsecurity/vfs-fs-access",
   "version": "1.0.0",
   "license": "MIT",
-  "description": "Extensible virtual filesystem with streams, random access, and watchers",
-  "main": "./lib/index.js",
-  "module": "./esm/index.js",
-  "types": "./lib/index.d.ts",
+  "description": "File System Access API implemented with @socketsecurity/vfs",
+  "main": "lib/index.js",
+  "module": "esm/index.js",
   "exports": {
     ".": {
       "import": {
@@ -31,8 +30,8 @@
   "scripts": {
     "build": "tsc -b && tsc -b tsconfig.esm.json"
   },
-
   "dependencies": {
-    "pony-cause": "^2.1.10"
+    "@socketsecurity/vfs": "^1.0.0",
+    "@types/wicg-file-system-access": "^2020.9.6"
   }
 }

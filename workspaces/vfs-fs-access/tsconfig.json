@@ -1,11 +1,14 @@
 {
   "extends": "../../shared/tsconfig.base.json",
   "compilerOptions": {
-    "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs",
+    "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs-fs-access",
     "lib": ["ESNext", "DOM"],
     "rootDir": "src",
     "outDir": "lib"
   },
   "include": ["src"],
-  "exclude": []
+  "exclude": [],
+  "references": [{
+    "path": "../vfs"
+  }]
 }

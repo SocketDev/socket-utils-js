@@ -4,9 +4,12 @@
     "target": "ESNext",
     "module": "node16",
     "moduleResolution": "node16",
+    "lib": ["ESNext"],
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "declarationMap": true,
-    "composite": true
+    "composite": true,
+    "noEmitOnError": true,
+    "typeRoots": []
   }
 }

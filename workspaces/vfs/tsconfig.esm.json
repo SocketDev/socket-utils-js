@@ -3,6 +3,7 @@
   "compilerOptions": {
     "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs-esm",
     "module": "ESNext",
+    "lib": ["ESNext", "DOM"],
     "rootDir": "src",
     "outDir": "esm"
   },

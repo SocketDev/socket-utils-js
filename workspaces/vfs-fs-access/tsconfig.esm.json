@@ -1,8 +1,9 @@
 {
   "extends": "../../shared/tsconfig.base.json",
   "compilerOptions": {
-    "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs-node-esm",
+    "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs-fs-access-esm",
     "module": "ESNext",
+    "lib": ["ESNext", "DOM"],
     "rootDir": "src",
     "outDir": "esm"
   },
