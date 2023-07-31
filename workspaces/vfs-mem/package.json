@@ -1,8 +1,8 @@
 {
-  "name": "@socketsecurity/vfs-fs-access",
+  "name": "@socketsecurity/vfs-mem",
   "version": "1.0.0",
   "license": "MIT",
-  "description": "File System Access API implemented with @socketsecurity/vfs",
+  "description": "Memory implementation of @socketsecurity/vfs",
   "main": "./lib/index.js",
   "module": "./esm/index.js",
   "exports": {
@@ -27,11 +27,13 @@
     "type": "git",
     "url": "git://github.com/SocketDev/socket-utils-js.git"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "build": "tsc -b && tsc -b tsconfig.esm.json"
   },
   "dependencies": {
-    "@socketsecurity/vfs": "^1.0.0",
-    "@types/wicg-file-system-access": "^2020.9.6"
+    "@socketsecurity/vfs": "^1.0.0"
   }
 }

@@ -1,11 +1,12 @@
 const resolveParts = (paths: string[]) => {
   const parts: string[] = []
+  const absolute = paths.length > 0 && paths[0].startsWith('/')
 
   for (const path of paths) {
     for (const part of path.split('/')) {
       if (!part || part === '.') continue
       if (part === '..') {
-        if (!parts.length || parts[parts.length - 1] === '..') {
+        if (!absolute && (!parts.length || parts[parts.length - 1] === '..')) {
           parts.push('..')
         } else {
           parts.pop()
@@ -16,7 +17,10 @@ const resolveParts = (paths: string[]) => {
     }
   }
 
-  return parts
+  return {
+    absolute,
+    parts
+  }
 }
 
 export function parse (path: string) {
@@ -24,7 +28,12 @@ export function parse (path: string) {
 }
 
 export function join (...paths: string[]) {
-  return resolveParts(paths).join('/') || '.'
+  const resolved = resolveParts(paths)
+  return resolved.parts.length
+    ? (resolved.absolute ? '/' : '') + resolved.parts.join('/')
+    : resolved.absolute
+      ? '/'
+      : '.'
 }
 
 export function normalize (path: string) {
@@ -32,8 +41,8 @@ export function normalize (path: string) {
 }
 
 export function relative (from: string, to: string) {
-  const fromParts = parse(from)
-  const toParts = parse(to)
+  const fromParts = parse(from).parts
+  const toParts = parse(to).parts
 
   const firstDiff = fromParts.findIndex((part, i) => i >= toParts.length || part !== toParts[i])
   if (firstDiff === -1) {

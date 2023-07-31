@@ -1,5 +1,7 @@
 import { ErrorWithCause } from 'pony-cause'
 
+import * as path from './path'
+
 export type VFSErrorCode =
   | 'ENOENT'
   | 'ENOSYS'
@@ -11,6 +13,7 @@ export type VFSErrorCode =
   | 'ENFILE'
   | 'EBADF'
   | 'EINVAL'
+  | 'EEXIST'
   | 'EUNKNOWN'
 
 export class VFSError extends ErrorWithCause<Error> {
@@ -118,42 +121,45 @@ export abstract class VFS<
   R extends VFSReadStream<B> = VFSReadStream<B>,
   W extends VFSWriteStream = VFSWriteStream
 > {
-  protected abstract _readDir (dir: string): Promise<string[]>
-  protected abstract _readDirent (dir: string): Promise<VFSDirent[]>
-  protected abstract _readFile (file: string, signal?: AbortSignal): Promise<B>
-  protected abstract _readFileStream (file: string, signal?: AbortSignal): R
+  protected abstract _readDir (dir: string[]): Promise<string[]>
+  protected abstract _readDirent (dir: string[]): Promise<VFSDirent[]>
+  protected abstract _mkdir (dir: string[]): Promise<void>
+  protected abstract _readFile (file: string[], signal?: AbortSignal): Promise<B>
+  protected abstract _readFileStream (file: string[], signal?: AbortSignal): R
   protected abstract _removeDir (
-    dir: string,
+    dir: string[],
     recursive: boolean,
     signal?: AbortSignal
   ): Promise<void>
-  protected abstract _removeFile (file: string, signal?: AbortSignal): Promise<void>
+  protected abstract _removeFile (file: string[], signal?: AbortSignal): Promise<void>
   protected abstract _appendFile (
-    file: string,
+    file: string[],
     data: Uint8Array,
     signal?: AbortSignal
   ): Promise<void>
-  protected abstract _appendFileStream (file: string, signal?: AbortSignal): W
+  protected abstract _appendFileStream (file: string[], signal?: AbortSignal): W
   protected abstract _writeFile (
-    file: string,
+    file: string[],
     data: Uint8Array,
     signal?: AbortSignal
   ): Promise<void>
-  protected abstract _writeFileStream (file: string, signal?: AbortSignal): W
-  protected abstract _truncate (file: string, to: number): Promise<void>
-  protected abstract _copyDir (src: string, dst: string, signal?: AbortSignal): Promise<void>
-  protected abstract _copyFile (src: string, dst: string, signal?: AbortSignal): Promise<void>
+  protected abstract _writeFileStream (file: string[], signal?: AbortSignal): W
+  protected abstract _truncate (file: string[], to: number): Promise<void>
+  protected abstract _copyDir (src: string[], dst: string[], signal?: AbortSignal): Promise<void>
+  protected abstract _copyFile (src: string[], dst: string[], signal?: AbortSignal): Promise<void>
   protected abstract _openFile (
-    file: string,
+    file: string[],
     read: boolean,
     write: boolean,
     truncate: boolean
   ): Promise<VFSFileHandle>
-  protected abstract _stat (file: string): Promise<VFSStats>
-  protected abstract _lstat (file: string): Promise<VFSStats>
-  protected abstract _exists (file: string): Promise<boolean>
-  protected abstract _symlink (target: string, link: string): Promise<void>
-  protected abstract _realPath (link: string): Promise<string>
+  protected abstract _stat (file: string[]): Promise<VFSStats>
+  protected abstract _lstat (file: string[]): Promise<VFSStats>
+  protected abstract _exists (file: string[]): Promise<boolean>
+  protected abstract _symlink (target: string[], link: string[], relative: boolean): Promise<void>
+  protected abstract _readSymlink (link: string[]): Promise<string>
+  protected abstract _realPath (link: string[]): Promise<string>
+  protected abstract _rename (src: string[], dst: string[]): Promise<void>
   protected abstract _watch (
     glob: string,
     watcher: VFSWatchCallback,
@@ -164,31 +170,34 @@ export abstract class VFS<
   readDir (dir: string, options: { withFileTypes: true }): Promise<VFSDirent[]>
   readDir (dir: string, options?: { withFileTypes: boolean }): Promise<string[] | VFSDirent[]>
   readDir (dir: string, options: { withFileTypes?: boolean } = {}) {
-    return options.withFileTypes ? this._readDirent(dir) : this._readDir(dir)
+    return options.withFileTypes
+      ? this._readDirent(path.parse(dir).parts)
+      : this._readDir(path.parse(dir).parts)
   }
 
   readFile (file: string, options: { signal?: AbortSignal } = {}) {
-    return this._readFile(file, options.signal)
+    return this._readFile(path.parse(file).parts, options.signal)
   }
 
   readFileStream (file: string, options: { signal?: AbortSignal } = {}) {
-    return this._readFileStream(file, options.signal)
+    return this._readFileStream(path.parse(file).parts, options.signal)
   }
 
   removeDir (dir: string, options: { recursive?: boolean, signal?: AbortSignal } = {}) {
-    return this._removeDir(dir, options.recursive ?? false, options.signal)
+    return this._removeDir(path.parse(dir).parts, options.recursive ?? false, options.signal)
   }
 
   removeFile (file: string, options: { signal?: AbortSignal } = {}) {
-    return this._removeFile(file, options.signal)
+    return this._removeFile(path.parse(file).parts, options.signal)
   }
 
   async remove (filepath: string, options: { signal?: AbortSignal } = {}) {
+    const parts = path.parse(filepath).parts
     try {
-      await this.removeFile(filepath, { signal: options.signal })
+      await this._removeFile(parts, options.signal)
     } catch (err) {
       if (err instanceof VFSError && err.code === 'EISDIR') {
-        await this.removeDir(filepath, { recursive: true, signal: options.signal })
+        await this._removeDir(parts, true, options.signal)
       }
       throw err
     }
@@ -200,34 +209,36 @@ export abstract class VFS<
     options: { append?: boolean, signal?: AbortSignal } = {}
   ) {
     return options.append
-      ? this._appendFile(file, data, options.signal)
-      : this._writeFile(file, data, options.signal)
+      ? this._appendFile(path.parse(file).parts, data, options.signal)
+      : this._writeFile(path.parse(file).parts, data, options.signal)
   }
 
   writeFileStream (file: string, options: { append?: boolean, signal?: AbortSignal } = {}) {
     return options.append
-      ? this._appendFileStream(file, options.signal)
-      : this._writeFileStream(file, options.signal)
+      ? this._appendFileStream(path.parse(file).parts, options.signal)
+      : this._writeFileStream(path.parse(file).parts, options.signal)
   }
 
   truncate (file: string, to = 0) {
-    return this._truncate(file, to)
+    return this._truncate(path.parse(file).parts, to)
   }
 
   copyDir (src: string, dst: string, options: { signal?: AbortSignal } = {}) {
-    return this._copyDir(src, dst, options.signal)
+    return this._copyDir(path.parse(src).parts, path.parse(dst).parts, options.signal)
   }
 
   copyFile (src: string, dst: string, options: { signal?: AbortSignal } = {}) {
-    return this._copyFile(src, dst, options.signal)
+    return this._copyFile(path.parse(src).parts, path.parse(dst).parts, options.signal)
   }
 
   async copy (src: string, dst: string, options: { signal?: AbortSignal } = {}) {
+    const srcParsed = path.parse(src).parts
+    const dstParsed = path.parse(dst).parts
     try {
-      await this.copyFile(src, dst, { signal: options.signal })
+      await this._copyFile(srcParsed, dstParsed, options.signal)
     } catch (err) {
       if (err instanceof VFSError && err.code === 'EISDIR') {
-        await this.copyDir(src, dst, { signal: options.signal })
+        await this._copyDir(srcParsed, dstParsed, options.signal)
       }
       throw err
     }
@@ -235,7 +246,7 @@ export abstract class VFS<
 
   async open (file: string, options: { read?: boolean, write?: boolean, truncate?: boolean } = {}) {
     return this._openFile(
-      file,
+      path.parse(file).parts,
       options.read || options.write == null,
       !!options.write,
       !!options.write && (options.truncate == null || options.truncate)
@@ -318,24 +329,37 @@ export abstract class VFS<
   }
 
   stat (file: string) {
-    return this._stat(file)
+    return this._stat(path.parse(file).parts)
   }
 
   lstat (file: string) {
-    return this._lstat(file)
+    return this._lstat(path.parse(file).parts)
   }
 
   exists (file: string) {
-    return this._exists(file)
+    return this._exists(path.parse(file).parts)
   }
 
   realPath (link: string) {
-    return this._realPath(link)
+    return this._realPath(path.parse(link).parts)
   }
 
-  symlink (src: string, dst: string) {
-    return this._symlink(src, dst)
+  symlink (target: string, link: string) {
+    const targetParsed = path.parse(target)
+    return this._symlink(targetParsed.parts, path.parse(link).parts, !targetParsed.absolute)
+  }
+
+  readSymlink (link: string) {
+    return this._readSymlink(path.parse(link).parts)
+  }
+
+  rename (src: string, dst: string) {
+    return this._rename(path.parse(src).parts, path.parse(dst).parts)
+  }
+
+  mkdir (dir: string) {
+    return this._mkdir(path.parse(dir).parts)
   }
 }
 
-export * as path from './path'
+export { path }

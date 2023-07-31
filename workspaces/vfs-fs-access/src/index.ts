@@ -1,7 +1,13 @@
 /// <reference types="wicg-file-system-access" />
-import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
+import { VFS, VFSError, VFSFileHandle } from '@socketsecurity/vfs'
 
 import type { VFSDirent, VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
+
+interface MovableHandle extends FileSystemHandle {
+  move (parent: FileSystemDirectoryHandle, name: string): Promise<void>
+}
+
+const isMovable = (handle: FileSystemHandle): handle is MovableHandle => 'move' in handle
 
 // need to wrap with wrapVFSErr
 const throwIfAborted = (signal?: AbortSignal) => {
@@ -207,20 +213,18 @@ export class FSAccessVFS extends VFS {
     this._root = handle
   }
 
-  private async _locate (path: string) {
-    const normalized = vfsPath.normalize(path)
-    if (normalized === '.') return null
+  private async _locate (path: string[]) {
+    if (!path.length) return null
     if (this._root.kind !== 'directory') {
       throw new VFSError('cannot traverse single-file filesystem', { code: 'ENOTDIR' })
     }
-    const parts = normalized.split('/')
-    if (parts[0] === '..') {
-      throw new VFSError('cannot traverse out of root directory', { code: 'EPERM' })
+    if (path[0] === '..') {
+      throw new VFSError('path outside base directory', { code: 'ENOENT' })
     }
     let curDir = this._root
-    for (let i = 0; i < parts.length - 1; ++i) {
+    for (let i = 0; i < path.length - 1; ++i) {
       try {
-        curDir = await curDir.getDirectoryHandle(parts[i])
+        curDir = await curDir.getDirectoryHandle(path[i])
       } catch (err) {
         if (err instanceof Error && err.name === 'TypeMismatchError') {
           throw new VFSError('not a directory', { code: 'ENOTDIR', cause: err })
@@ -231,11 +235,11 @@ export class FSAccessVFS extends VFS {
 
     return {
       parent: curDir,
-      name: parts[parts.length - 1]
+      name: path[path.length - 1]
     }
   }
 
-  private async _file (path: string, create?: boolean) {
+  private async _file (path: string[], create?: boolean) {
     const located = await this._locate(path)
     if (!located) {
       if (this._root.kind === 'file') return this._root
@@ -251,7 +255,7 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  private async _dir (path: string, create?: boolean) {
+  private async _dir (path: string[], create?: boolean) {
     const located = await this._locate(path)
     if (!located) {
       if (this._root.kind === 'directory') return this._root
@@ -267,7 +271,7 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  protected async _appendFile (file: string, data: Uint8Array, signal?: AbortSignal | undefined) {
+  protected async _appendFile (file: string[], data: Uint8Array, signal?: AbortSignal | undefined) {
     const f = await this._file(file, true)
     let w: Promise<WritableStream> | undefined
     try {
@@ -292,7 +296,7 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  protected _appendFileStream (file: string, signal?: AbortSignal | undefined) {
+  protected _appendFileStream (file: string[], signal?: AbortSignal | undefined) {
     return wrapWriteStream(async () => {
       const f = await this._file(file, true)
       let w: Promise<WritableStream> | undefined
@@ -333,7 +337,7 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  protected async _copyFile (src: string, dst: string, signal?: AbortSignal | undefined) {
+  protected async _copyFile (src: string[], dst: string[], signal?: AbortSignal | undefined) {
     const [srcFile, dstFile] = await Promise.all([this._file(src), this._file(dst, true)])
 
     return await withVFSErr(this._copyFileRaw(srcFile, dstFile, signal))
@@ -363,7 +367,7 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  protected async _copyDir (src: string, dst: string, signal?: AbortSignal | undefined) {
+  protected async _copyDir (src: string[], dst: string[], signal?: AbortSignal | undefined) {
     const [srcDir, dstDir] = await Promise.all([this._dir(src), this._dir(dst, true)])
 
     throwIfAborted(signal)
@@ -373,7 +377,7 @@ export class FSAccessVFS extends VFS {
     await this._copyDirRecurse(srcDir, dstDir, ctrl)
   }
 
-  protected async _exists (file: string) {
+  protected async _exists (file: string[]) {
     try {
       await this._locate(file)
       return true
@@ -382,11 +386,11 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  protected async _lstat (file: string) {
+  protected async _lstat (file: string[]) {
     return this._stat(file)
   }
 
-  protected async _openFile (file: string, _read: boolean, write: boolean, truncate: boolean) {
+  protected async _openFile (file: string[], _read: boolean, write: boolean, truncate: boolean) {
     // always must open for read to stat
     return await FSAccessVFSFileHandle.open(
       await this._file(file),
@@ -395,7 +399,7 @@ export class FSAccessVFS extends VFS {
     )
   }
 
-  protected async _readDir (dir: string) {
+  protected async _readDir (dir: string[]) {
     const names: string[] = []
     const vfsDir = await this._dir(dir)
 
@@ -410,7 +414,7 @@ export class FSAccessVFS extends VFS {
     return names
   }
 
-  protected async _readDirent (dir: string) {
+  protected async _readDirent (dir: string[]) {
     const dirents: VFSDirent[] = []
     const vfsDir = await this._dir(dir)
 
@@ -428,7 +432,7 @@ export class FSAccessVFS extends VFS {
     return dirents
   }
 
-  protected async _readFile (file: string, _signal?: AbortSignal | undefined) {
+  protected async _readFile (file: string[], _signal?: AbortSignal | undefined) {
     const vfsFile = await this._file(file)
 
     // No extra error handling needed here because only the file itself can cause an error
@@ -437,20 +441,24 @@ export class FSAccessVFS extends VFS {
     return new Uint8Array(buf)
   }
 
-  protected _readFileStream (file: string, signal?: AbortSignal | undefined) {
+  protected _readFileStream (file: string[], signal?: AbortSignal | undefined) {
     return wrapReadStream(async () => {
       const vfsFile = await this._file(file)
       return await withVFSErr(vfsFile.getFile().then(f => f.stream()))
     }, signal)
   }
 
-  protected async _realPath (link: string) {
+  protected async _realPath (link: string[]) {
     await this._locate(link)
     // no symlinks here
-    return vfsPath.normalize(link)
+    return `/${link.join('/')}`
   }
 
-  protected async _removeDir (dir: string, recursive: boolean, _signal?: AbortSignal | undefined) {
+  protected async _removeDir (
+    dir: string[],
+    recursive: boolean,
+    _signal?: AbortSignal | undefined
+  ) {
     const loc = await this._locate(dir)
     if (!loc) {
       throw new VFSError('cannot remove root', { code: 'EPERM' })
@@ -465,10 +473,10 @@ export class FSAccessVFS extends VFS {
       throw wrapVFSErr(err)
     }
 
-    await loc.parent.removeEntry(loc.name, { recursive })
+    await withVFSErr(loc.parent.removeEntry(loc.name, { recursive }))
   }
 
-  protected async _removeFile (file: string, signal?: AbortSignal | undefined) {
+  protected async _removeFile (file: string[], signal?: AbortSignal | undefined) {
     const loc = await this._locate(file)
     if (!loc) {
       throw new VFSError('cannot remove root', { code: 'EPERM' })
@@ -483,10 +491,10 @@ export class FSAccessVFS extends VFS {
       throw wrapVFSErr(err)
     }
 
-    await loc.parent.removeEntry(loc.name)
+    await withVFSErr(loc.parent.removeEntry(loc.name))
   }
 
-  protected async _stat (file: string) {
+  protected async _stat (file: string[]) {
     const loc = await this._locate(file)
     if (!loc) {
       return this._root.kind === 'directory'
@@ -507,11 +515,95 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  protected async _symlink (_target: string, _link: string) {
+  protected async _symlink (_target: string[], _link: string[]) {
     throw new VFSError('symlinks not supported in FS Access API', { code: 'ENOSYS' })
   }
 
-  protected async _truncate (file: string, to: number) {
+  protected async _readSymlink (link: string[]): Promise<never> {
+    throw new VFSError('symlinks not supported in FS Access API', { code: 'ENOSYS' })
+  }
+
+  // unfortunately, 'move' isn't widely available yet, so this method is long and slow
+  protected async _rename (src: string[], dst: string[]) {
+    const [srcLoc, tgtLoc] = await Promise.all([this._locate(src), this._locate(dst)])
+    if (!srcLoc) {
+      throw new VFSError('cannot rename root', { code: 'EINVAL' })
+    }
+    if (!tgtLoc) {
+      throw new VFSError('cannot rename to root', { code: 'EINVAL' })
+    }
+    const handle = await withVFSErr(srcLoc.parent.getFileHandle(srcLoc.name)
+      .catch(err => {
+        if (err instanceof Error && err.name === 'TypeMismatchError') {
+          return srcLoc.parent.getDirectoryHandle(srcLoc.name)
+        }
+        throw err
+      })
+    )
+
+    try {
+      if (isMovable(handle)) {
+        await withVFSErr(handle.move(tgtLoc.parent, tgtLoc.name))
+        return
+      }
+    } catch (err) {
+      // this API is buggy - may have failed on a directory
+      // pass for now
+    }
+
+    if (handle.kind === 'file') {
+      const out = await tgtLoc.parent.getFileHandle(tgtLoc.name, { create: true })
+        .catch(err => {
+          if (err instanceof Error && err.name === 'TypeMismatchError') {
+            throw new VFSError('not a file', { code: 'EISDIR', cause: err })
+          }
+          throw wrapVFSErr(err)
+        })
+      await withVFSErr(this._copyFileRaw(handle, out))
+      await withVFSErr(srcLoc.parent.removeEntry(srcLoc.name))
+    } else {
+      try {
+        await tgtLoc.parent.getDirectoryHandle(tgtLoc.name)
+      } catch (err) {
+        if (err instanceof Error) {
+          if (err.name === 'NotFoundError') {
+            const entry = await withVFSErr(
+              tgtLoc.parent.getDirectoryHandle(tgtLoc.name, { create: true })
+            )
+            await withVFSErr(this._copyDirRecurse(handle, entry, new AbortController()))
+            await withVFSErr(srcLoc.parent.removeEntry(srcLoc.name, { recursive: true }))
+          } else if (err.name === 'TypeMismatchError') {
+            throw new VFSError('file exists', { code: 'EEXIST' })
+          }
+        }
+        throw wrapVFSErr(err)
+      }
+      throw new VFSError('directory already exists', { code: 'EEXIST' })
+    }
+  }
+
+  protected async _mkdir (dir: string[]) {
+    const loc = await this._locate(dir)
+    if (!loc) {
+      throw new VFSError('cannot create root directory', { code: 'EINVAL' })
+    }
+    try {
+      await loc.parent.getDirectoryHandle(loc.name)
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.name === 'NotFoundError') {
+          await withVFSErr(loc.parent.getDirectoryHandle(loc.name, { create: true }))
+          return
+        } else if (err.name === 'TypeMismatchError') {
+          throw new VFSError('file exists', { code: 'EEXIST' })
+        }
+      }
+      throw wrapVFSErr(err)
+    }
+    throw new VFSError('directory already exists', { code: 'EEXIST' })
+  }
+
+  protected async _truncate (file: string[], to: number) {
     const f = await this._file(file)
     const writable = await withVFSErr(f.createWritable())
     // TODO: surely this closes the stream if this errors? if not we need a try block
@@ -526,13 +618,13 @@ export class FSAccessVFS extends VFS {
     throw new VFSError('watching not supported in FS Access API', { code: 'ENOSYS' })
   }
 
-  protected async _writeFile (file: string, data: Uint8Array, signal?: AbortSignal | undefined) {
+  protected async _writeFile (file: string[], data: Uint8Array, signal?: AbortSignal | undefined) {
     const f = await this._file(file, true)
     const writable = await withVFSErr(f.createWritable())
     await writable.write(data)
   }
 
-  protected _writeFileStream (file: string, signal?: AbortSignal | undefined) {
+  protected _writeFileStream (file: string[], signal?: AbortSignal | undefined) {
     return wrapWriteStream(async () => {
       const f = await this._file(file, true)
       return await withVFSErr(f.createWritable())
