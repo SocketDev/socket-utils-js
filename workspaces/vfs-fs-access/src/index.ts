@@ -1,5 +1,5 @@
 /// <reference types="wicg-file-system-access" />
-import { VFS, VFSError, VFSFileHandle } from '@socketsecurity/vfs'
+import { VFS, VFSError, VFSFileHandle, path } from '@socketsecurity/vfs'
 
 import type { VFSDirent, VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
 
@@ -218,18 +218,31 @@ export class FSAccessVFS extends VFS {
     if (this._root.kind !== 'directory') {
       throw new VFSError('cannot traverse single-file filesystem', { code: 'ENOTDIR' })
     }
-    if (path[0] === '..') {
-      throw new VFSError('path outside base directory', { code: 'ENOENT' })
-    }
+    const parents: FileSystemDirectoryHandle[] = []
     let curDir = this._root
     for (let i = 0; i < path.length - 1; ++i) {
+      if (path[i] === '..') {
+        if (parents.length) {
+          curDir = parents.pop()!
+        }
+        continue
+      }
       try {
         curDir = await curDir.getDirectoryHandle(path[i])
+        parents.push(curDir)
       } catch (err) {
         if (err instanceof Error && err.name === 'TypeMismatchError') {
           throw new VFSError('not a directory', { code: 'ENOTDIR', cause: err })
         }
         throw wrapVFSErr(err)
+      }
+    }
+
+    if (path[path.length - 1] === '..') {
+      if (parents.length < 2) return null
+      return {
+        parent: parents[parents.length - 2],
+        name: parents[parents.length - 1].name
       }
     }
 
@@ -346,35 +359,45 @@ export class FSAccessVFS extends VFS {
   protected async _copyDirRecurse (
     src: FileSystemDirectoryHandle,
     dst: FileSystemDirectoryHandle,
-    ctrl: AbortController
+    signal: AbortSignal
   ) {
-    throwIfAborted(ctrl.signal)
+    throwIfAborted(signal)
     const copies: Promise<void>[] = []
 
+    for await (const [name, sub] of src.entries()) {
+      throwIfAborted(signal)
+      const copy = sub.kind === 'file'
+        ? dst.getFileHandle(name, { create: true })
+          .then(f => this._copyFileRaw(sub, f, signal))
+        : dst.getDirectoryHandle(name, { create: true })
+          .then(d => this._copyDirRecurse(sub, d, signal))
+      copies.push(copy)
+    }
+    await Promise.all(copies)
+  }
+
+  protected async _copyDirRaw (
+    src: FileSystemDirectoryHandle,
+    dst: FileSystemDirectoryHandle,
+    signal?: AbortSignal
+  ) {
+    throwIfAborted(signal)
+    const ctrl = new AbortController()
+    signal?.addEventListener('abort', () => ctrl.abort(signal.reason), { once: true })
+
     try {
-      for await (const [name, sub] of src.entries()) {
-        throwIfAborted(ctrl.signal)
-        const copy = sub.kind === 'file'
-          ? dst.getFileHandle(name, { create: true })
-            .then(f => this._copyFileRaw(sub, f, ctrl.signal))
-          : dst.getDirectoryHandle(name, { create: true })
-            .then(d => this._copyDirRecurse(sub, d, ctrl))
-        copies.push(copy)
-      }
-      await Promise.all(copies)
+      await this._copyDirRecurse(src, dst, ctrl.signal)
     } catch (err) {
-      ctrl.abort(wrapVFSErr(err))
+      const wrapped = wrapVFSErr(err)
+      ctrl.abort(wrapped)
+      throw wrapped
     }
   }
 
   protected async _copyDir (src: string[], dst: string[], signal?: AbortSignal | undefined) {
     const [srcDir, dstDir] = await Promise.all([this._dir(src), this._dir(dst, true)])
 
-    throwIfAborted(signal)
-    const ctrl = new AbortController()
-    signal?.addEventListener('abort', () => ctrl.abort(signal.reason), { once: true })
-
-    await this._copyDirRecurse(srcDir, dstDir, ctrl)
+    await this._copyDirRaw(srcDir, dstDir, signal)
   }
 
   protected async _exists (file: string[]) {
@@ -451,7 +474,7 @@ export class FSAccessVFS extends VFS {
   protected async _realPath (link: string[]) {
     await this._locate(link)
     // no symlinks here
-    return `/${link.join('/')}`
+    return path.normalize(`/${link.join('/')}`)
   }
 
   protected async _removeDir (
@@ -574,7 +597,7 @@ export class FSAccessVFS extends VFS {
             const entry = await withVFSErr(
               tgtLoc.parent.getDirectoryHandle(tgtLoc.name, { create: true })
             )
-            await withVFSErr(this._copyDirRecurse(handle, entry, new AbortController()))
+            await this._copyDirRaw(handle, entry)
             await withVFSErr(srcLoc.parent.removeEntry(srcLoc.name, { recursive: true }))
           } else if (err.name === 'TypeMismatchError') {
             throw new VFSError('file exists', { code: 'EEXIST' })

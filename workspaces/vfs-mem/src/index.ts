@@ -1,4 +1,4 @@
-import { VFS, VFSError, VFSFileHandle, VFSWriteStream, path as vfsPath } from '@socketsecurity/vfs'
+import { VFS, VFSEntryType, VFSError, VFSFileHandle, VFSWriteStream, path as vfsPath } from '@socketsecurity/vfs'
 
 const enum FileNodeType {
   File = 0,
@@ -46,6 +46,7 @@ type SymlinkNode = {
 
 type MountNode = {
   type: FileNodeType.Mount
+  mountPath: string[]
   vfs: VFS
 }
 
@@ -179,6 +180,12 @@ const freePool = (
   }
 }
 
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) {
+    throw wrapVFSErr(signal.reason)
+  }
+}
+
 export interface MemVFSOptions {
   pools?: MemVFSPoolSpec[]
   // ratio of file size to allocated size before it can shrink
@@ -295,22 +302,16 @@ export class MemVFS extends VFS {
       }
 
       if (ctx.node.relative) {
-        let back = -1
         const to = ctx.node.to
-        let tail = ctx.i
-        do {
-          ++back
-          if (!ctx.i--) {
-            throw new VFSError('cannot read symlink out of root', { code: 'ENOENT' })
-          }
-          ctx.node = ctx.parents.pop()!
-        } while (back < to.length && to[back] === '..')
-
-        const newPath = ctx.path.slice(0, ctx.i)
-        for (; back < to.length; ++back) {
-          newPath.push(to[back])
+        if (!ctx.i--) {
+          throw new VFSError('cannot read symlink out of root', { code: 'ENOENT' })
         }
-        for (; tail < ctx.path.length; ++tail) {
+        ctx.node = ctx.parents.pop()!
+        const newPath = ctx.path.slice(0, ctx.i)
+        for (let i = 0; i < to.length; ++i) {
+          newPath.push(to[i])
+        }
+        for (let tail = ctx.i + 1; tail < ctx.path.length; ++tail) {
           newPath.push(ctx.path[tail])
         }
         ctx.path = newPath
@@ -357,6 +358,10 @@ export class MemVFS extends VFS {
     }
     this._find(ctx)
     if (ctx.node.type === FileNodeType.Mount) {
+      const outPath = ctx.node.mountPath.slice()
+      for (; ctx.i < ctx.path.length; ++ctx.i) {
+        outPath.push(ctx.path[ctx.i])
+      }
       return {
         mount: true,
         vfs: ctx.node.vfs,
@@ -621,7 +626,7 @@ export class MemVFS extends VFS {
     }
   }
 
-  private _read (content: ContentRef | null) {
+  private _readRaw (content: ContentRef | null) {
     if (!content) return EMPTY_BUF
     if (content.src === FileBackingType.Pool) {
       return new Uint8Array(this._pools[content.pool].buf,
@@ -633,6 +638,58 @@ export class MemVFS extends VFS {
     }
   }
 
+  private _writeRawStream (node: FileNode, offset = 0, signal?: AbortSignal) {
+    throwIfAborted(signal)
+    return new WritableStream<Uint8Array>({
+      start: ctrl => {
+        signal?.addEventListener('abort', err => {
+          ctrl.error(wrapVFSErr(err))
+        }, { once: true })
+      },
+      write: chunk => {
+        this._writeRaw(node, chunk, offset)
+        offset += chunk.byteLength
+      }
+    })
+  }
+
+  private _readRawStream (node: FileNode, signal?: AbortSignal) {
+    throwIfAborted(signal)
+    let bytesRead = 0
+    // we avoid just returning the entire raw chunk here because it would need to be copied
+    // for huge files this doesn't have any memory overhead
+    return new ReadableStream({
+      start: ctrl => {
+        signal?.addEventListener('abort', err => {
+          ctrl.error(wrapVFSErr(err))
+        })
+      },
+      pull: ctrl => {
+        const readResult = this._readRaw(node.content)
+        if (ctrl.byobRequest) {
+          const view = ctrl.byobRequest.view!
+          const desiredSize = Math.min(ctrl.desiredSize!, view.byteLength)
+          const writeInto = new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+          if (desiredSize + bytesRead >= readResult.byteLength) {
+            writeInto.set(readResult.subarray(bytesRead))
+            ctrl.byobRequest.respond(readResult.byteLength - bytesRead)
+            ctrl.close()
+            bytesRead = readResult.byteLength
+          } else {
+            writeInto.set(readResult.subarray(bytesRead, bytesRead += desiredSize))
+            ctrl.byobRequest.respond(desiredSize)
+          }
+        } else {
+          const endSize = Math.min(readResult.byteLength, bytesRead + ctrl.desiredSize!)
+          ctrl.enqueue(readResult.slice(bytesRead, bytesRead = endSize))
+          if (endSize === readResult.byteLength) ctrl.close()
+        }
+      },
+      autoAllocateChunkSize: 65536,
+      type: 'bytes'
+    }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
+  }
+
   protected async _truncate (file: string[], to: number) {
     const node = this._file(file)
     if (node.mount) {
@@ -642,118 +699,238 @@ export class MemVFS extends VFS {
   }
 
   protected async _appendFile (file: string[], data: Uint8Array, signal?: AbortSignal) {
-    const node = this._file(file, true)
-    if (node.mount) {
-      return node.vfs['_appendFile'](node.path, data, signal)
+    const result = this._file(file, true)
+    if (result.mount) {
+      return result.vfs['_appendFile'](result.path, data, signal)
     }
-    this._writeRaw(node.node, data, node.node.content ? node.node.content.len : 0)
+    throwIfAborted(signal)
+    this._writeRaw(result.node, data, result.node.content ? result.node.content.len : 0)
   }
 
   protected _appendFileStream (file: string[], signal?: AbortSignal | undefined) {
-    const node = this._file(file, true)
-    if (node.mount) {
-      return node.vfs['_appendFileStream'](node.path, signal)
+    const result = this._file(file, true)
+    if (result.mount) {
+      return result.vfs['_appendFileStream'](result.path, signal)
     }
-    let len = node.node.content ? node.node.content.len : 0
+    const len = result.node.content ? result.node.content.len : 0
     // not sure if we need to handle aborts/closes here
-    return new WritableStream<Uint8Array>({
-      write: chunk => {
-        this._writeRaw(node.node, chunk, len)
-        len += chunk.byteLength
-      }
-    })
+    return this._writeRawStream(result.node, len, signal)
   }
 
   private async _copyFileFromMount (
     into: FileNode,
-    from: MountNode,
+    vfs: VFS,
     path: string[],
     signal: AbortSignal
   ) {
     // for pathologically slow stat
     let cancelReserve = false
-    from.vfs['_stat'](path).then(stats => {
+    vfs['_stat'](path).then(stats => {
       if (cancelReserve) return
       this._reserve(into, stats.size)
     }).catch(() => {})
-    const readStream = from.vfs['_readFileStream'](path, signal)
-    let offset = 0
+    const readStream = vfs['_readFileStream'](path)
     try {
       await withVFSErr(
-        readStream.pipeTo(new WritableStream({
-          write: chunk => {
-            this._writeRaw(into, chunk, offset)
-            offset += chunk.byteLength
-          }
-        }), { signal })
+        readStream.pipeTo(this._writeRawStream(into), { signal })
       )
     } finally {
       cancelReserve = true
     }
   }
 
+  private async _copyFileToMount (
+    into: VFS,
+    path: string[],
+    from: FileNode,
+    signal: AbortSignal
+  ) {
+    await withVFSErr(
+      this._readRawStream(from).pipeTo(into['_writeFileStream'](path), { signal })
+    )
+  }
+
+  private async _copyFileBetweenMounts (
+    into: VFS,
+    intoPath: string[],
+    from: VFS,
+    fromPath: string[],
+    signal: AbortSignal
+  ) {
+    await withVFSErr(
+      from['_readFileStream'](fromPath).pipeTo(
+        into['_writeFileStream'](intoPath),
+        { signal }
+      )
+    )
+  }
+
   private async _copyDirFromMount (
     into: DirNode,
-    from: MountNode,
+    from: VFS,
     pathToMount: string[],
     path: string[],
-    ctrl: AbortController
+    signal: AbortSignal
   ) {
-    try {
-      const childCopies: Promise<void>[] = []
-      for (const entry of await from.vfs['_readDirent'](path)) {
-        const subPath = path.concat(entry.name)
-        if (entry.type === 'dir') {
-          const childNode: DirNode = { type: FileNodeType.Dir, children: new Map() }
+    const childCopies: Promise<void>[] = []
+    for (const entry of await from['_readDirent'](path)) {
+      throwIfAborted(signal)
+      const curChild = into.children.get(entry.name)
+      const curResolvedType = curChild && (
+        curChild.type === FileNodeType.Mount
+          ? (await curChild.vfs['_stat'](curChild.mountPath)).type
+          : (['file', 'dir', 'symlink'] as VFSEntryType[])[curChild.type]
+      )
+      if (curResolvedType && ((curResolvedType === 'dir') !== (entry.type === 'dir'))) {
+        throw new VFSError(`cannot overwrite ${curResolvedType} with ${entry.type}`, {
+          code: curResolvedType === 'dir' ? 'ENOTDIR' : 'EISDIR'
+        })
+      }
+      const subPath = path.concat(entry.name)
+      if (entry.type === 'dir') {
+        const childNode: DirNode = curChild && curChild.type === FileNodeType.Dir
+          ? curChild
+          : { type: FileNodeType.Dir, children: new Map() }
+        into.children.set(entry.name, childNode)
+        childCopies.push(this._copyDirFromMount(
+          childNode,
+          from,
+          pathToMount,
+          subPath,
+          signal
+        ))
+      } else if (entry.type === 'file') {
+        const childNode: FileNode = curChild && curChild.type === FileNodeType.File
+          ? curChild
+          : { type: FileNodeType.File, content: null }
+        into.children.set(entry.name, childNode)
+        childCopies.push(this._copyFileFromMount(
+          childNode,
+          from,
+          subPath,
+          signal
+        ))
+      } else if (entry.type === 'symlink') {
+        childCopies.push(from['_realPath'](subPath).then(resolved => {
+          const { parts } = vfsPath.parse(resolved)
+          const childNode: SymlinkNode = {
+            type: FileNodeType.Symlink,
+            to: pathToMount.concat(parts),
+            relative: false
+          }
           into.children.set(entry.name, childNode)
-          childCopies.push(this._copyDirFromMount(
-            childNode,
-            from,
-            pathToMount,
-            subPath,
-            ctrl
-          ))
-        } else if (entry.type === 'file') {
-          const childNode: FileNode = { type: FileNodeType.File, content: null }
-          into.children.set(entry.name, childNode)
-          childCopies.push(this._copyFileFromMount(
-            childNode,
-            from,
-            subPath,
-            ctrl.signal
-          ))
-        } else if (entry.type === 'symlink') {
-          childCopies.push(from.vfs['_realPath'](subPath).then(resolved => {
-            const { parts } = vfsPath.parse(resolved)
-            const childNode: SymlinkNode = {
-              type: FileNodeType.Symlink,
-              to: pathToMount.concat(parts),
-              relative: false
-            }
-            into.children.set(entry.name, childNode)
-          }))
+        }))
+      }
+    }
+    await Promise.all(childCopies)
+  }
+
+  private async _copyDirToMount (
+    into: VFS,
+    path: string[],
+    from: DirNode,
+    signal: AbortSignal
+  ) {
+    const childCopies: Promise<void>[] = []
+    for (const [name, node] of from.children.entries()) {
+      const mountPath = path.concat(name)
+      if (node.type === FileNodeType.Dir) {
+        childCopies.push(this._copyDirToMount(into, mountPath, node, signal))
+      } else if (node.type === FileNodeType.File) {
+        childCopies.push(this._copyFileToMount(into, mountPath, node, signal))
+      } else if (node.type === FileNodeType.Symlink) {
+        // TODO: how to handle this with cycles?
+      } else if (node.type === FileNodeType.Mount) {
+        childCopies.push(this._copyDirBetweenMounts(
+          into,
+          mountPath,
+          node.vfs,
+          node.mountPath,
+          signal
+        ))
+      }
+    }
+    await Promise.all(childCopies)
+  }
+
+  private async _copyDirBetweenMounts (
+    into: VFS,
+    intoPath: string[],
+    from: VFS,
+    fromPath: string[],
+    signal: AbortSignal
+  ) {
+    const childCopies: Promise<void>[] = []
+    const dirents = await from['_readDirent'](fromPath)
+    throwIfAborted(signal)
+    for (const entry of dirents) {
+      const newIntoPath = intoPath.concat(entry.name)
+      const newFromPath = fromPath.concat(entry.name)
+      if (entry.type === 'dir') {
+        childCopies.push(this._copyDirBetweenMounts(into, newIntoPath, from, newFromPath, signal))
+      } else if (entry.type === 'file') {
+        childCopies.push(this._copyFileBetweenMounts(into, newIntoPath, from, newFromPath, signal))
+      } else if (entry.type === 'symlink') {
+        // TODO: resolve these while processing cycles
+      }
+    }
+    await Promise.all(childCopies)
+  }
+
+  private _copyFileNodes (src: FileNode, dst: FileNode) {
+    this._truncateRaw(dst, 0, false)
+    const buf = this._readRaw(src.content)
+    this._writeRaw(dst, buf, 0)
+  }
+
+  private async _copyDirNodes (src: DirNode, srcPath: string[], dst: DirNode, signal: AbortSignal) {
+    const childCopies: Promise<void>[] = []
+    for (const [name, node] of src.children.entries()) {
+      const curChild = dst.children.get(name)
+      const curResolvedType = curChild && (
+        curChild.type === FileNodeType.Mount
+          ? (await curChild.vfs['_stat'](curChild.mountPath)).type
+          : (['file', 'dir', 'symlink'] as VFSEntryType[])[curChild.type]
+      )
+      const srcResolvedType = node.type === FileNodeType.Mount
+        ? (await node.vfs['_stat'](node.mountPath)).type
+        : (['file', 'dir', 'symlink'] as VFSEntryType[])[node.type]
+
+      if (curResolvedType && ((curResolvedType === 'dir') !== (srcResolvedType === 'dir'))) {
+        throw new VFSError(`cannot overwrite ${curResolvedType} with ${srcResolvedType}`, {
+          code: curResolvedType === 'dir' ? 'ENOTDIR' : 'EISDIR'
+        })
+      }
+      if (node.type === FileNodeType.Dir) {
+        const childNode: DirNode = curChild && curChild.type === FileNodeType.Dir
+          ? curChild
+          : { type: FileNodeType.Dir, children: new Map() }
+        dst.children.set(name, childNode)
+        childCopies.push(this._copyDirNodes(node, srcPath.concat(name), childNode, signal))
+      } else if (node.type === FileNodeType.File) {
+        const childNode: FileNode = curChild && curChild.type === FileNodeType.File
+          ? curChild
+          : { type: FileNodeType.File, content: null }
+        dst.children.set(name, childNode)
+        this._copyFileNodes(node, childNode)
+      } else if (node.type === FileNodeType.Symlink) {
+        let to = node.to
+        if (node.relative) {
+          const newTo = srcPath
+          for (const part of to) {
+            if (part === '..')
+          }
+        }
+        const childNode: SymlinkNode = {
+          type: FileNodeType.Symlink,
+          to: node.relative ? srcPath.concat(node.)
         }
       }
-      await Promise.all(childCopies)
-    } catch (err) {
-      ctrl.abort(err)
-      throw err
     }
-  }
-
-  private _copyFileNodes (a: FileNode, b: FileNode) {
-    this._truncateRaw(b, 0, false)
-    const src = this._read(a.content)
-    this._writeRaw(b, src, 0)
-  }
-
-  private _copyDirNodes (a: DirNode, b: DirNode, ctrl: AbortController) {
-
   }
 
   protected async _copyDir (src: string[], dst: string[], signal?: AbortSignal) {
     const srcNode = this._dir(src, true)
     const dstNode = this._dir(dst, true)
-
   }
 }

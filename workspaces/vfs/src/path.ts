@@ -1,20 +1,21 @@
-const resolveParts = (paths: string[]) => {
+interface ParsedPath {
+  absolute: boolean
+  parts: string[]
+  throughLink: boolean
+}
+
+const parseParts = (paths: string[]): ParsedPath => {
   const parts: string[] = []
   const absolute = paths.length > 0 && paths[0].startsWith('/')
-  const throughLink = paths.length > 0 && paths[paths.length - 1].endsWith('/')
+  const throughLink = paths.length > 0 && (
+    paths[paths.length - 1].endsWith('/') ||
+    paths[paths.length - 1].endsWith('/.')
+  )
 
   for (const path of paths) {
     for (const part of path.split('/')) {
       if (!part || part === '.') continue
-      if (part === '..') {
-        if (!absolute && (!parts.length || parts[parts.length - 1] === '..')) {
-          parts.push('..')
-        } else {
-          parts.pop()
-        }
-      } else {
-        parts.push(part)
-      }
+      parts.push(part)
     }
   }
 
@@ -25,15 +26,34 @@ const resolveParts = (paths: string[]) => {
   }
 }
 
+const resolve = (parsed: ParsedPath) => {
+  let ptr = -1
+  let topPtr = -1
+  for (let i = 0; i < parsed.parts.length; ++i) {
+    if (parsed.parts[i] === '..') {
+      if (ptr === topPtr) {
+        if (!parsed.absolute) {
+          parsed.parts[++ptr] = '..'
+          ++topPtr
+        }
+      } else --ptr
+    } else if (++ptr !== i) {
+      parsed.parts[ptr] = parsed.parts[i]
+    }
+  }
+  parsed.parts.length = ptr + 1
+  return parsed
+}
+
 export function parse (path: string) {
-  return resolveParts([path])
+  return parseParts([path])
 }
 
 export function join (...paths: string[]) {
-  const resolved = resolveParts(paths)
-  return resolved.parts.length
-    ? (resolved.absolute ? '/' : '') + resolved.parts.join('/')
-    : resolved.absolute
+  const parsed = resolve(parseParts(paths))
+  return parsed.parts.length
+    ? (parsed.absolute ? '/' : '') + parsed.parts.join('/')
+    : parsed.absolute
       ? '/'
       : '.'
 }
@@ -43,8 +63,8 @@ export function normalize (path: string) {
 }
 
 export function relative (from: string, to: string) {
-  const fromParts = parse(from).parts
-  const toParts = parse(to).parts
+  const fromParts = resolve(parse(from)).parts
+  const toParts = resolve(parse(to)).parts
 
   const firstDiff = fromParts.findIndex((part, i) => i >= toParts.length || part !== toParts[i])
   if (firstDiff === -1) {
