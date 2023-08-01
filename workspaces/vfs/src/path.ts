@@ -1,6 +1,7 @@
 const resolveParts = (paths: string[]) => {
   const parts: string[] = []
   const absolute = paths.length > 0 && paths[0].startsWith('/')
+  const throughLink = paths.length > 0 && paths[paths.length - 1].endsWith('/')
 
   for (const path of paths) {
     for (const part of path.split('/')) {
@@ -19,6 +20,7 @@ const resolveParts = (paths: string[]) => {
 
   return {
     absolute,
+    throughLink,
     parts
   }
 }

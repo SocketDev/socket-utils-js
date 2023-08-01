@@ -304,8 +304,12 @@ export class NodeVFS extends VFS<
     await withVFSErr(fs.promises.rm(await ensureDir(this._fsPath(dir) + '/'), { recursive }))
   }
 
-  protected async _removeFile (file: string[], _signal?: AbortSignal | undefined) {
-    await withVFSErr(fs.promises.unlink(this._fsPath(file)))
+  protected async _removeFile (
+    file: string[],
+    throughLink: boolean,
+    _signal?: AbortSignal | undefined
+  ) {
+    await withVFSErr(fs.promises.unlink(this._fsPath(file) + (throughLink ? '/' : '')))
   }
 
   protected async _stat (file: string[]) {

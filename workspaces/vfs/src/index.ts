@@ -123,6 +123,7 @@ export abstract class VFS<
 > {
   protected abstract _readDir (dir: string[]): Promise<string[]>
   protected abstract _readDirent (dir: string[]): Promise<VFSDirent[]>
+  // always makes dir through symlinks
   protected abstract _mkdir (dir: string[]): Promise<void>
   protected abstract _readFile (file: string[], signal?: AbortSignal): Promise<B>
   protected abstract _readFileStream (file: string[], signal?: AbortSignal): R
@@ -131,7 +132,12 @@ export abstract class VFS<
     recursive: boolean,
     signal?: AbortSignal
   ): Promise<void>
-  protected abstract _removeFile (file: string[], signal?: AbortSignal): Promise<void>
+  // may or may not remove through symlink
+  protected abstract _removeFile (
+    file: string[],
+    throughLink: boolean,
+    signal?: AbortSignal
+  ): Promise<void>
   protected abstract _appendFile (
     file: string[],
     data: Uint8Array,
@@ -145,6 +151,7 @@ export abstract class VFS<
   ): Promise<void>
   protected abstract _writeFileStream (file: string[], signal?: AbortSignal): W
   protected abstract _truncate (file: string[], to: number): Promise<void>
+  // copyDir and copyFile always copy through symlinks
   protected abstract _copyDir (src: string[], dst: string[], signal?: AbortSignal): Promise<void>
   protected abstract _copyFile (src: string[], dst: string[], signal?: AbortSignal): Promise<void>
   protected abstract _openFile (
@@ -188,16 +195,17 @@ export abstract class VFS<
   }
 
   removeFile (file: string, options: { signal?: AbortSignal } = {}) {
-    return this._removeFile(path.parse(file).parts, options.signal)
+    const parsed = path.parse(file)
+    return this._removeFile(parsed.parts, parsed.throughLink, options.signal)
   }
 
   async remove (filepath: string, options: { signal?: AbortSignal } = {}) {
-    const parts = path.parse(filepath).parts
+    const parsed = path.parse(filepath)
     try {
-      await this._removeFile(parts, options.signal)
+      await this._removeFile(parsed.parts, parsed.throughLink, options.signal)
     } catch (err) {
       if (err instanceof VFSError && err.code === 'EISDIR') {
-        await this._removeDir(parts, true, options.signal)
+        await this._removeDir(parsed.parts, true, options.signal)
       }
       throw err
     }

@@ -476,7 +476,11 @@ export class FSAccessVFS extends VFS {
     await withVFSErr(loc.parent.removeEntry(loc.name, { recursive }))
   }
 
-  protected async _removeFile (file: string[], signal?: AbortSignal | undefined) {
+  protected async _removeFile (
+    file: string[],
+    _throughLink: boolean,
+    _signal?: AbortSignal | undefined
+  ) {
     const loc = await this._locate(file)
     if (!loc) {
       throw new VFSError('cannot remove root', { code: 'EPERM' })
