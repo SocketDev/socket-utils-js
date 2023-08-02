@@ -60,7 +60,7 @@ export abstract class ReadonlyVFS<
   protected _writeFileStream () { return noWrite() }
 }
 
-export class ReadonlyVFSWrapper<
+class ReadonlyVFSWrapper<
   B extends Uint8Array = Uint8Array,
   R extends VFSReadStream<B> = VFSReadStream<B>
 > extends ReadonlyVFS<B, R> {
@@ -116,4 +116,11 @@ export class ReadonlyVFSWrapper<
   protected _watch (glob: string, watcher: VFSWatchCallback, onError: VFSWatchErrorCallback) {
     return this._inner['_watch'](glob, watcher, onError)
   }
+}
+
+export function makeReadonly <
+  B extends Uint8Array,
+  R extends VFSReadStream<B>
+> (fs: VFS<B, R>): ReadonlyVFS<B, R> {
+  return new ReadonlyVFSWrapper(fs)
 }
