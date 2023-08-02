@@ -1,4 +1,9 @@
-import { VFS, VFSEntryType, VFSError, VFSFileHandle, VFSStats, VFSWriteStream, path as vfsPath } from '@socketsecurity/vfs'
+import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
+
+import type {
+  VFSDirent, VFSEntryType, VFSStats, VFSReadStream, VFSWriteStream
+, VFSWatchCallback, VFSWatchErrorCallback
+} from '@socketsecurity/vfs'
 
 const enum FileNodeType {
   File = 0,
@@ -52,34 +57,45 @@ type MountNode = {
 
 type FSNode = FileNode | DirNode | SymlinkNode | MountNode
 
+const enum FindContextCreateMode {
+  None = 0,
+  File = 1,
+  Dir = 2,
+  Symlink = 4,
+  Recurse = 8,
+  DidCreate = 16
+}
+
 type FindContext = {
   node: FSNode
   path: ReadonlyArray<string>
   parents: DirNode[]
   thruLast: boolean
-  create: FileNodeType.File | FileNodeType.Dir | -1
+  create: FindContextCreateMode
   i: number
   depth: number
 }
 
-type MountFindResult = {
+type BaseFindResult = {
+  ctx: FindContext
+}
+
+type MountFindResult = BaseFindResult & {
   mount: true
   vfs: VFS
   path: string[]
 }
 
-type NonMountFindResult = {
+type NonMountFindResult = BaseFindResult & {
   mount: false
   node: FSNode
 }
 
-type FileFindResult = {
-  mount: false
+type FileFindResult = NonMountFindResult & {
   node: FileNode
 }
 
-type DirFindResult = {
-  mount: false
+type DirFindResult = NonMountFindResult & {
   node: DirNode
 }
 
@@ -180,11 +196,61 @@ const freePool = (
   }
 }
 
+class MemVFSFileHandle extends VFSFileHandle {
+  private _fs: MemVFS | null
+  private _node: FileNode | null
+
+  private constructor (fs: MemVFS, node: FileNode) {
+    super()
+    this._fs = fs
+    this._node = node
+  }
+
+  protected async _close () {
+    this._node = null
+    this._fs = null
+  }
+
+  protected async _flush () {
+    // noop, all writes automatically flushed
+  }
+
+  protected async _read (into: Uint8Array, position: number) {
+    const value = this._fs!['_readRaw'](this._node!.content)
+    into.set(value.subarray(position, position + into.byteLength))
+    return into.byteLength
+  }
+
+  protected async _stat (): Promise<VFSStats> {
+    return {
+      type: 'file',
+      size: this._node!.content ? this._node!.content.len : 0
+    }
+  }
+
+  protected async _truncate (to: number) {
+    this._fs!['_truncateRaw'](this._node!, to, true)
+  }
+
+  protected async _write (data: Uint8Array, position: number) {
+    this._fs!['_writeRaw'](this._node!, data, position)
+    return data.byteLength
+  }
+
+  static open (fs: MemVFS, node: FileNode) {
+    return new MemVFSFileHandle(fs, node)
+  }
+}
+
 const throwIfAborted = (signal?: AbortSignal) => {
   if (signal?.aborted) {
     throw wrapVFSErr(signal.reason)
   }
 }
+
+const entryTypes: VFSEntryType[] = ['file', 'dir', 'symlink']
+
+const getEntryType = (fileType: FileNodeType) => entryTypes[fileType]
 
 export interface MemVFSOptions {
   pools?: MemVFSPoolSpec[]
@@ -271,16 +337,25 @@ export class MemVFS extends VFS {
         } else {
           let child = ctx.node.children.get(part)
           if (!child) {
-            if (ctx.i === ctx.path.length - 1) {
-              if (ctx.create === FileNodeType.File) {
+            if (ctx.create & FindContextCreateMode.Recurse || ctx.i === ctx.path.length - 1) {
+              if (ctx.create & FindContextCreateMode.Dir) {
+                ctx.create |= FindContextCreateMode.DidCreate
+                child = {
+                  type: FileNodeType.Dir,
+                  children: new Map()
+                }
+              } else if (ctx.create & FindContextCreateMode.File) {
+                ctx.create |= FindContextCreateMode.DidCreate
                 child = {
                   type: FileNodeType.File,
                   content: null
                 }
-              } else if (ctx.create === FileNodeType.Dir) {
+              } else if (ctx.create & FindContextCreateMode.Symlink) {
+                ctx.create |= FindContextCreateMode.DidCreate
                 child = {
-                  type: FileNodeType.Dir,
-                  children: new Map()
+                  type: FileNodeType.Symlink,
+                  to: [],
+                  relative: false
                 }
               }
             }
@@ -350,19 +425,16 @@ export class MemVFS extends VFS {
   private _entry (
     path: string[],
     thruLast: boolean,
-    create: FindContext['create'] = -1
+    create: FindContextCreateMode
   ): MountFindResult | NonMountFindResult {
     if (!this._root) {
-      if (!path.length && create !== -1) {
-        this._root = create === FileNodeType.Dir
+      if (create && (create & FindContextCreateMode.Recurse || !path.length)) {
+        this._root = create & FindContextCreateMode.Dir
           ? { type: FileNodeType.Dir, children: new Map() }
           : { type: FileNodeType.File, content: null }
-        return {
-          mount: false,
-          node: this._root
-        }
+      } else {
+        throw new VFSError('no such file or directory', { code: 'ENOENT' })
       }
-      throw new VFSError('no such file or directory', { code: 'ENOENT' })
     }
     const ctx: FindContext = {
       node: this._root,
@@ -376,23 +448,25 @@ export class MemVFS extends VFS {
     this._find(ctx)
     if (ctx.node.type === FileNodeType.Mount) {
       const outPath = ctx.node.mountPath.slice()
-      for (; ctx.i < ctx.path.length; ++ctx.i) {
-        outPath.push(ctx.path[ctx.i])
+      for (let i = ctx.i; i < ctx.path.length; ++i) {
+        outPath.push(ctx.path[i])
       }
       return {
         mount: true,
+        ctx,
         vfs: ctx.node.vfs,
-        path: ctx.path.slice(ctx.i)
+        path: outPath
       }
     }
     return {
       mount: false,
+      ctx,
       node: ctx.node
     }
   }
 
   private _file (path: string[], create = false): MountFindResult | FileFindResult {
-    const result = this._entry(path, true, create ? FileNodeType.File : -1)
+    const result = this._entry(path, true, create ? FindContextCreateMode.File : 0)
     if (!result.mount && result.node.type !== FileNodeType.File) {
       throw new VFSError('not a file', { code: 'EISDIR' })
     }
@@ -400,7 +474,7 @@ export class MemVFS extends VFS {
   }
 
   private _dir (path: string[], create = false): MountFindResult | DirFindResult {
-    const result = this._entry(path, true, create ? FileNodeType.Dir : -1)
+    const result = this._entry(path, true, create ? FindContextCreateMode.Dir : 0)
     if (!result.mount && result.node.type !== FileNodeType.Dir) {
       throw new VFSError('not a directory', { code: 'ENOTDIR' })
     }
@@ -430,6 +504,14 @@ export class MemVFS extends VFS {
     node.content.len = to
     if (shrink) {
       if (to === 0) {
+        if (node.content.src === FileBackingType.Pool) {
+          freePool(
+            this._pools[node.content.pool],
+            node.content,
+            this._poolShrinkRatio,
+            this._poolShrinkRetainFactor
+          )
+        }
         node.content = null
         return
       }
@@ -710,7 +792,7 @@ export class MemVFS extends VFS {
     this._writeRaw(result.node, data, result.node.content ? result.node.content.len : 0)
   }
 
-  protected _appendFileStream (file: string[], signal?: AbortSignal | undefined) {
+  protected _appendFileStream (file: string[], signal?: AbortSignal): VFSWriteStream {
     const result = this._file(file, true)
     if (result.mount) {
       return result.vfs['_appendFileStream'](result.path, signal)
@@ -774,13 +856,14 @@ export class MemVFS extends VFS {
     signal: AbortSignal
   ) {
     const childCopies: Promise<void>[] = []
-    for (const entry of await from['_readDirent'](path)) {
-      throwIfAborted(signal)
+    const dirents = await from['_readDirent'](path)
+    throwIfAborted(signal)
+    for (const entry of dirents) {
       const curChild = into.children.get(entry.name)
       const curResolvedType = curChild && (
         curChild.type === FileNodeType.Mount
-          ? (await curChild.vfs['_stat'](curChild.mountPath)).type
-          : (['file', 'dir', 'symlink'] as VFSEntryType[])[curChild.type]
+          ? 'mount'
+          : getEntryType(curChild.type)
       )
       if (curResolvedType && ((curResolvedType === 'dir') !== (entry.type === 'dir'))) {
         throw new VFSError(`cannot overwrite ${curResolvedType} with ${entry.type}`, {
@@ -792,6 +875,7 @@ export class MemVFS extends VFS {
         const childNode: DirNode = curChild && curChild.type === FileNodeType.Dir
           ? curChild
           : { type: FileNodeType.Dir, children: new Map() }
+        if (curChild && childNode !== curChild) this._cleanup(curChild)
         into.children.set(entry.name, childNode)
         childCopies.push(this._copyDirFromMount(
           childNode,
@@ -803,6 +887,7 @@ export class MemVFS extends VFS {
         const childNode: FileNode = curChild && curChild.type === FileNodeType.File
           ? curChild
           : { type: FileNodeType.File, content: null }
+        if (curChild && childNode !== curChild) this._cleanup(curChild)
         into.children.set(entry.name, childNode)
         childCopies.push(this._copyFileFromMount(
           childNode,
@@ -811,6 +896,7 @@ export class MemVFS extends VFS {
           signal
         ))
       } else if (entry.type === 'symlink') {
+        if (curChild) this._cleanup(curChild)
         childCopies.push(from['_readSymlink'](subPath).then(resolved => {
           const parsed = vfsPath.parse(resolved)
           // verbatim symlinks
@@ -835,7 +921,7 @@ export class MemVFS extends VFS {
     signal: AbortSignal
   ) {
     const childCopies: Promise<void>[] = []
-    for (const [name, node] of from.children.entries()) {
+    for (const [name, node] of from.children) {
       const mountPath = path.concat(name)
       if (node.type === FileNodeType.Dir) {
         childCopies.push(this._copyDirToMount(into, mountPath, node, signal))
@@ -875,7 +961,12 @@ export class MemVFS extends VFS {
       } else if (entry.type === 'file') {
         childCopies.push(this._copyFileBetweenMounts(into, newIntoPath, from, newFromPath, signal))
       } else if (entry.type === 'symlink') {
-        // TODO: resolve these while processing cycles
+        // verbatim symlinks
+        // probably breaks... TODO
+        childCopies.push(from['_readSymlink'](newFromPath).then(link => {
+          const parsed = vfsPath.parse(link)
+          return into['_symlink'](parsed.parts, newIntoPath, !parsed.absolute)
+        }))
       }
     }
     await Promise.all(childCopies)
@@ -889,16 +980,17 @@ export class MemVFS extends VFS {
 
   private async _copyDirNodes (src: DirNode, dst: DirNode, signal: AbortSignal) {
     const childCopies: Promise<void>[] = []
-    for (const [name, node] of src.children.entries()) {
+    for (const [name, node] of src.children) {
       const curChild = dst.children.get(name)
       const curResolvedType = curChild && (
+        // mounts act as symlinks when targets of overwriting
         curChild.type === FileNodeType.Mount
-          ? (await curChild.vfs['_stat'](curChild.mountPath)).type
-          : (['file', 'dir', 'symlink'] as VFSEntryType[])[curChild.type]
+          ? 'mount'
+          : getEntryType(curChild.type)
       )
       const srcResolvedType = node.type === FileNodeType.Mount
         ? (await node.vfs['_stat'](node.mountPath)).type
-        : (['file', 'dir', 'symlink'] as VFSEntryType[])[node.type]
+        : getEntryType(node.type)
 
       if (curResolvedType && ((curResolvedType === 'dir') !== (srcResolvedType === 'dir'))) {
         throw new VFSError(`cannot overwrite ${curResolvedType} with ${srcResolvedType}`, {
@@ -909,15 +1001,18 @@ export class MemVFS extends VFS {
         const childNode: DirNode = curChild && curChild.type === FileNodeType.Dir
           ? curChild
           : { type: FileNodeType.Dir, children: new Map() }
+        if (curChild && childNode !== curChild) this._cleanup(curChild)
         dst.children.set(name, childNode)
         childCopies.push(this._copyDirNodes(node, childNode, signal))
       } else if (node.type === FileNodeType.File) {
         const childNode: FileNode = curChild && curChild.type === FileNodeType.File
           ? curChild
           : { type: FileNodeType.File, content: null }
+        if (curChild && childNode !== curChild) this._cleanup(curChild)
         dst.children.set(name, childNode)
         this._copyFileNodes(node, childNode)
       } else if (node.type === FileNodeType.Symlink) {
+        if (curChild) this._cleanup(curChild)
         const childNode: SymlinkNode = {
           type: FileNodeType.Symlink,
           to: node.to,
@@ -928,7 +1023,8 @@ export class MemVFS extends VFS {
         const childNode: DirNode = curChild && curChild.type === FileNodeType.Dir
           ? curChild
           : { type: FileNodeType.Dir, children: new Map() }
-          dst.children.set(name, childNode)
+        if (curChild && childNode !== curChild) this._cleanup(curChild)
+        dst.children.set(name, childNode)
         childCopies.push(this._copyDirFromMount(
           childNode,
           node.vfs,
@@ -939,11 +1035,13 @@ export class MemVFS extends VFS {
         const childNode: FileNode = curChild && curChild.type === FileNodeType.File
           ? curChild
           : { type: FileNodeType.File, content: null }
+        if (curChild && childNode !== curChild) this._cleanup(curChild)
         dst.children.set(name, childNode)
         childCopies.push(this._copyFileFromMount(childNode, node.vfs, node.mountPath, signal))
       } else {
         // symlink-rooted mount should be impossible
         // just ignore for now
+        // TODO: verify this is true
       }
     }
   }
@@ -1023,7 +1121,7 @@ export class MemVFS extends VFS {
 
   protected async _exists (file: string[]) {
     try {
-      const result = this._entry(file, true, -1)
+      const result = this._entry(file, true, 0)
       if (result.mount) {
         return result.vfs['_exists'](result.path)
       }
@@ -1037,7 +1135,7 @@ export class MemVFS extends VFS {
   }
 
   protected async _lstat (file: string[]): Promise<VFSStats> {
-    const result = this._entry(file, false)
+    const result = this._entry(file, false, 0)
     if (result.mount) {
       return result.vfs['_lstat'](result.path)
     }
@@ -1060,6 +1158,425 @@ export class MemVFS extends VFS {
   }
 
   protected async _mkdir (dir: string[], recursive: boolean) {
-    this._entry()
+    if (recursive) {
+      const result = this._entry(
+        dir,
+        true,
+        FindContextCreateMode.Dir & FindContextCreateMode.Recurse
+      )
+      if (result.mount) {
+        return result.vfs['_mkdir'](result.path, true)
+      }
+    } else {
+      const result = this._entry(dir, true, FindContextCreateMode.Dir)
+      if (result.mount) {
+        return result.vfs['_mkdir'](result.path, false)
+      }
+      if (!(result.ctx.create & FindContextCreateMode.DidCreate)) {
+        throw new VFSError('path exists', { code: 'EEXIST' })
+      }
+    }
+  }
+
+  protected async _openFile (file: string[], read: boolean, write: boolean, truncate: boolean) {
+    const result = this._file(file, write)
+    if (result.mount) {
+      return result.vfs['_openFile'](result.path, read, write, truncate)
+    }
+    if (truncate) {
+      this._truncateRaw(result.node, 0, true)
+    }
+    return MemVFSFileHandle.open(this, result.node)
+  }
+
+  protected async _readDir (dir: string[]) {
+    const result = this._dir(dir)
+    if (result.mount) {
+      return result.vfs['_readDir'](result.path)
+    }
+    return Array.from(result.node.children.keys())
+  }
+
+  protected async _readDirent (dir: string[]) {
+    const result = this._dir(dir)
+    if (result.mount) {
+      return result.vfs['_readDirent'](result.path)
+    }
+    const results: (VFSDirent | Promise<VFSDirent>)[] = []
+    for (const [key, node] of result.node.children) {
+      if (node.type === FileNodeType.Mount) {
+        results.push(
+          node.vfs['_lstat'](node.mountPath).then(info => ({
+            type: info.type,
+            name: key
+          }))
+        )
+      } else {
+        results.push({
+          type: getEntryType(node.type),
+          name: key
+        })
+      }
+    }
+    return await Promise.all(results)
+  }
+
+  protected async _readFile (file: string[], signal?: AbortSignal) {
+    const result = this._file(file)
+    if (result.mount) {
+      return result.vfs['_readFile'](result.path, signal)
+    }
+    // copy to prevent modifying original source
+    return this._readRaw(result.node.content).slice()
+  }
+
+  protected _readFileStream (file: string[], signal?: AbortSignal): VFSReadStream {
+    const result = this._file(file)
+    if (result.mount) {
+      return result.vfs['_readFileStream'](result.path, signal)
+    }
+    return this._readRawStream(result.node, signal)
+  }
+
+  protected async _readSymlink (link: string[]) {
+    const result = this._entry(link, false, 0)
+    if (result.mount) {
+      let symResult = await result.vfs['_readSymlink'](result.path)
+      // try to patch absolute paths
+      if (symResult.startsWith('/') && result.ctx.path.length) {
+        symResult = '/' + result.ctx.path.slice(0, result.ctx.i).join('/') + symResult
+      }
+      return symResult
+    }
+    if (result.node.type !== FileNodeType.Symlink) {
+      throw new VFSError('not a symlink', {
+        code: 'EINVAL'
+      })
+    }
+
+    return (result.node.relative ? '' : '/') + result.node.to.join('/')
+  }
+
+  protected async _realPath (link: string[]) {
+    const result = this._entry(link, true, 0)
+    if (result.mount) {
+      let realResult = await result.vfs['_realPath'](result.path)
+      // try to patch absolute paths
+      if (result.ctx.path.length) {
+        realResult = '/' + result.ctx.path.slice(0, result.ctx.i).join('/') + realResult
+      }
+      return realResult
+    }
+    return '/' + result.ctx.path.join('/')
+  }
+
+  private _cleanup (node: FSNode) {
+    if (node.type === FileNodeType.Dir) {
+      for (const child of node.children.values()) this._cleanup(child)
+      node.children.clear()
+    } else if (node.type === FileNodeType.File) {
+      this._truncateRaw(node, 0, true)
+    }
+  }
+
+  private _removeFromParent (ctx: FindContext, replaceWith?: FSNode) {
+    const parents = ctx.parents
+    if (!parents.length) {
+      this._root = replaceWith
+    } else {
+      const children = parents[parents.length - 1].children
+      const name = ctx.path[ctx.path.length - 1]
+      // TODO: does this always work?
+      if (replaceWith) children.set(name, replaceWith)
+      else children.delete(name)
+    }
+  }
+
+  protected async _removeDir (dir: string[], recursive: boolean, signal?: AbortSignal) {
+    const result = this._dir(dir)
+    if (result.mount) {
+      return result.vfs['_removeDir'](result.path, recursive, signal)
+    }
+    if (recursive) {
+      this._cleanup(result.node)
+    } else if (result.node.children.size) {
+      throw new VFSError('directory not empty', { code: 'ENOTEMPTY' })
+    }
+    this._removeFromParent(result.ctx)
+  }
+
+  protected async _removeFile (file: string[], signal?: AbortSignal) {
+    // don't resolve last to unlink instead of delete
+    const result = this._entry(file, false, 0)
+    if (result.mount && result.ctx.i !== result.ctx.path.length) {
+      return result.vfs['_removeFile'](result.path, signal)
+    }
+    if (!result.mount && result.node.type === FileNodeType.Dir) {
+      throw new VFSError('not a file', { code: 'EISDIR' })
+    }
+    this._cleanup(result.mount ? result.ctx.node : result.node)
+    this._removeFromParent(result.ctx)
+  }
+
+  private async _renameSlowFromMount (srcResult: MountFindResult, dst: string[]) {
+    const srcType = (await srcResult.vfs['_lstat'](srcResult.path)).type
+    const dstResult = this._entry(
+      dst,
+      false,
+      srcType === 'dir'
+        ? FindContextCreateMode.Dir
+        : srcType === 'file'
+          ? FindContextCreateMode.File
+          : FindContextCreateMode.Symlink
+    )
+    if (dstResult.mount && dstResult.ctx.i !== dstResult.ctx.path.length) {
+      if (dstResult.vfs === srcResult.vfs) {
+        return srcResult.vfs['_rename'](srcResult.path, dstResult.path)
+      }
+      // need to copy and delete if they're on different VFS instances
+      if (srcType === 'dir') {
+        const ctrl = new AbortController()
+        await this._copyDirBetweenMounts(
+          dstResult.vfs,
+          dstResult.path,
+          srcResult.vfs,
+          srcResult.path,
+          ctrl.signal
+        ).catch(err => {
+          ctrl.abort(err)
+          throw err
+        })
+        await srcResult.vfs['_removeDir'](srcResult.path, true)
+      } else if (srcType === 'file') {
+        await this._copyFileBetweenMounts(
+          dstResult.vfs,
+          dstResult.path,
+          srcResult.vfs,
+          srcResult.path
+        )
+        await srcResult.vfs['_removeFile'](srcResult.path)
+      } else {
+        const srcLink = await srcResult.vfs['_readSymlink'](srcResult.path)
+        const parsedLink = vfsPath.parse(srcLink)
+        // copy pasting symlinks verbatim probably breaks, TODO
+        await dstResult.vfs['_symlink'](parsedLink.parts, dstResult.path, !parsedLink.absolute)
+      }
+      return
+    }
+
+    if (srcType === 'dir') {
+      if (dstResult.mount || dstResult.node.type !== FileNodeType.Dir) {
+        throw new VFSError('cannot overwrite non-directory with directory', { code: 'ENOTDIR' })
+      }
+      if (dstResult.node.children.size !== 0) {
+        throw new VFSError('directory not empty', { code: 'ENOTEMPTY' })
+      }
+      const ctrl = new AbortController()
+      await this._copyDirFromMount(
+        dstResult.node,
+        srcResult.vfs,
+        srcResult.path,
+        ctrl.signal
+      ).catch(err => {
+        ctrl.abort(err)
+        throw err
+      })
+      await srcResult.vfs['_removeDir'](srcResult.path, true)
+    } else {
+      if (!dstResult.mount && dstResult.node.type === FileNodeType.Dir) {
+        throw new VFSError('cannot overwrite directory with non-directory', { code: 'EISDIR' })
+      }
+      let newNode = dstResult.mount ? dstResult.ctx.node : dstResult.node
+      if (srcType === 'file') {
+        // rename overwrites symlinks, mounts
+        if (newNode.type !== FileNodeType.File) {
+          this._cleanup(newNode)
+          newNode = { type: FileNodeType.File, content: null }
+          this._removeFromParent(
+            dstResult.ctx,
+            newNode
+          )
+        }
+        await this._copyFileFromMount(newNode, srcResult.vfs, srcResult.path)
+        await srcResult.vfs['_removeFile'](srcResult.path)
+      } else {
+        // rename overwrites files, mounts
+        if (newNode.type !== FileNodeType.Symlink) {
+          this._cleanup(newNode)
+          newNode = { type: FileNodeType.Symlink, to: [], relative: false }
+          this._removeFromParent(
+            dstResult.ctx,
+            newNode
+          )
+        }
+        const origLink = await srcResult.vfs['_readSymlink'](srcResult.path)
+        const parsed = vfsPath.parse(origLink)
+        // Again, symlinks probably break here
+        // TODO decide better behavior
+        newNode.to = parsed.parts
+        newNode.relative = !parsed.absolute
+        // TODO: hopefully this doesn't remove the actual file?
+        // Should have same semantics as _readSymlink so in theory no
+        await srcResult.vfs['_removeFile'](srcResult.path)
+      }
+    }
+  }
+
+  protected async _rename (src: string[], dst: string[]) {
+    const srcResult = this._entry(src, false, 0)
+    if (srcResult.mount) {
+      return this._renameSlowFromMount(srcResult, dst)
+    }
+
+    const dstResult = this._entry(
+      dst,
+      false,
+      srcResult.node.type === FileNodeType.Dir
+        ? FindContextCreateMode.Dir
+        : srcResult.node.type === FileNodeType.File
+          ? FindContextCreateMode.File
+          : FindContextCreateMode.Symlink
+    )
+
+    if (dstResult.mount && dstResult.ctx.i !== dstResult.ctx.path.length) {
+      if (srcResult.node.type === FileNodeType.Dir) {
+        const ctrl = new AbortController()
+        await this._copyDirToMount(dstResult.vfs, dstResult.path, srcResult.node, ctrl.signal)
+          .catch(err => {
+            ctrl.abort(err)
+            throw err
+          })
+      } else if (srcResult.node.type === FileNodeType.File) {
+        await this._copyFileToMount(dstResult.vfs, dstResult.path, srcResult.node)
+      } else if (srcResult.node.type === FileNodeType.Symlink) {
+        // verbatim copy symlink
+        await dstResult.vfs['_symlink'](dstResult.path, srcResult.node.to, srcResult.node.relative)
+      }
+      this._cleanup(srcResult.node)
+      this._removeFromParent(srcResult.ctx)
+      return
+    }
+
+    if (srcResult.node.type === FileNodeType.Dir) {
+      if (dstResult.mount || dstResult.node.type !== FileNodeType.Dir) {
+        throw new VFSError('cannot overwrite non-directory with directory', { code: 'ENOTDIR' })
+      }
+      if (dstResult.node.children.size !== 0) {
+        throw new VFSError('directory not empty', { code: 'ENOTEMPTY' })
+      }
+      // clone and clear to try to mitigate dangling references
+      dstResult.node.children = new Map(srcResult.node.children)
+      srcResult.node.children.clear()
+      this._removeFromParent(srcResult.ctx)
+    } else {
+      if (!dstResult.mount && dstResult.node.type === FileNodeType.Dir) {
+        throw new VFSError('cannot overwrite directory with non-directory', { code: 'EISDIR' })
+      }
+      let newNode = dstResult.mount ? dstResult.ctx.node : dstResult.node
+      if (srcResult.node.type === FileNodeType.File) {
+        // rename overwrites symlinks, mounts
+        if (newNode.type !== FileNodeType.File) {
+          this._cleanup(newNode)
+          newNode = { type: FileNodeType.File, content: null }
+          this._removeFromParent(dstResult.ctx, newNode)
+        }
+        newNode.content = srcResult.node.content
+        srcResult.node.content = null
+        this._removeFromParent(srcResult.ctx)
+      } else if (srcResult.node.type === FileNodeType.Symlink) {
+        // rename overwrites files, mounts
+        if (newNode.type !== FileNodeType.Symlink) {
+          this._cleanup(newNode)
+          newNode = { type: FileNodeType.Symlink, to: [], relative: false }
+          this._removeFromParent(dstResult.ctx, newNode)
+        }
+        newNode.to = srcResult.node.to
+        newNode.relative = srcResult.node.relative
+        this._removeFromParent(srcResult.ctx)
+      }
+    }
+  }
+
+  protected async _stat (file: string[]): Promise<VFSStats> {
+    const result = this._entry(file, true, 0)
+    if (result.mount) {
+      return result.vfs['_stat'](result.path)
+    }
+    if (result.node.type === FileNodeType.File) {
+      return {
+        type: 'file',
+        size: result.node.content ? result.node.content.len : 0
+      }
+    }
+    return {
+      type: 'dir',
+      size: 0
+    }
+  }
+
+  protected async _symlink (target: string[], link: string[], relative: boolean) {
+    const result = this._entry(link, false, FindContextCreateMode.Symlink)
+    if (result.mount) {
+      // TODO: maybe we should error on absolute symlinks here, as they're resolved wrong
+      return result.vfs['_symlink'](target, link, relative)
+    }
+    if (
+      result.node.type !== FileNodeType.Symlink ||
+      !(result.ctx.create & FindContextCreateMode.DidCreate)
+    ) {
+      throw new VFSError('file exists', { code: 'EEXIST' })
+    }
+    result.node.to = target.slice()
+    result.node.relative = relative
+  }
+
+  // TODO: maybe actually support this eventually
+  protected _watch (
+    glob: string,
+    watcher: VFSWatchCallback,
+    onError: VFSWatchErrorCallback
+  ): Promise<never> {
+    throw new VFSError('watching not supported', { code: 'ENOSYS' })
+  }
+
+  protected async _writeFile (file: string[], data: Uint8Array, signal?: AbortSignal) {
+    const result = this._file(file, true)
+    if (result.mount) {
+      return result.vfs['_writeFile'](file, data, signal)
+    }
+    this._truncateRaw(result.node, 0, false)
+    this._writeRaw(result.node, data, 0)
+  }
+
+  protected _writeFileStream (file: string[], signal?: AbortSignal): VFSWriteStream {
+    const result = this._file(file, true)
+    if (result.mount) {
+      return result.vfs['_writeFileStream'](file, signal)
+    }
+    this._truncateRaw(result.node, 0, false)
+    return this._writeRawStream(result.node, 0, signal)
+  }
+
+  protected async _mount (at: string[], fs: VFS, mountPath: string[]) {
+    const result = this._entry(at, true, FindContextCreateMode.File)
+    if (result.mount) {
+      throw new VFSError('cannot mount within existing mount', { code: 'EINVAL' })
+    }
+    if (!(result.ctx.create & FindContextCreateMode.DidCreate)) {
+      throw new VFSError('file exists', { code: 'EEXIST' })
+    }
+    this._removeFromParent(result.ctx, {
+      type: FileNodeType.Mount,
+      vfs: fs,
+      mountPath
+    })
+  }
+
+  mount (path: string, fs: VFS, options: { mountPath?: string } = {}) {
+    return this._mount(
+      vfsPath.parse(path).parts,
+      fs,
+      vfsPath.parse(options?.mountPath ?? '/').parts
+    )
   }
 }

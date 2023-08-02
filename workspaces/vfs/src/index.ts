@@ -93,6 +93,7 @@ export abstract class VFSFileHandle {
 
   async close () {
     if (this._closed) return
+    this._closed = true
     return this._close()
   }
 }
@@ -121,6 +122,8 @@ export abstract class VFS<
   R extends VFSReadStream<B> = VFSReadStream<B>,
   W extends VFSWriteStream = VFSWriteStream
 > {
+  // functions that don't go through final link:
+  // _symlink, _readSymlink, _rename, _removeFile, _lstat
   protected abstract _readDir (dir: string[]): Promise<string[]>
   protected abstract _readDirent (dir: string[]): Promise<VFSDirent[]>
   // always makes dir through symlinks

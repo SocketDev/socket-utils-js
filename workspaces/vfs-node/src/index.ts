@@ -454,13 +454,25 @@ export class NodeVFS extends VFS<
 
   protected async _readSymlink (link: string[]) {
     const fsLoc = await this._fsPath(link, false)
-    const result = await withVFSErr(fs.promises.readlink(fsLoc))
-    const targetPath = path.resolve(path.dirname(fsLoc), result)
-    return this._relPath(targetPath, true)
+    let result = await withVFSErr(fs.promises.readlink(fsLoc))
+    if (path.isAbsolute(result)) {
+      if (!result.startsWith(this._base + path.sep)) {
+        return this._relPath(result, true)
+      }
+      result = result.slice(this._base.length + 1)
+      // try to preserve semantics of /./../etc for VFS-generated symlinks
+    }
+    if (path.sep !== '/') {
+      result = result.split(path.sep).join('/')
+    }
+    return result
   }
 
   protected async _rename (src: string[], dst: string[]) {
-    const [srcPath, dstPath] = await Promise.all([this._fsPath(src, false), this._fsPath(dst)])
+    const [srcPath, dstPath] = await Promise.all([
+      this._fsPath(src, false),
+      this._fsPath(dst, false)
+    ])
     await withVFSErr(fs.promises.rename(srcPath, dstPath))
   }
 
