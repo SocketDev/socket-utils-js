@@ -1,0 +1,39 @@
+{
+  "name": "@socketsecurity/vfs-readonly",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "Readonly version of @socketsecurity/vfs",
+  "main": "./lib/index.js",
+  "module": "./esm/index.js",
+  "exports": {
+    ".": {
+      "import": {
+        "default": "./esm/index.js",
+        "types": "./esm/index.d.ts"
+      },
+      "require": {
+        "default": "./lib/index.js",
+        "types": "./lib/index.d.ts"
+      }
+    }
+  },
+  "author": {
+    "name": "Socket Inc",
+    "email": "eng@socket.dev",
+    "url": "https://socket.dev"
+  },
+  "homepage": "https://github.com/SocketDev/socket-utils-js",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/SocketDev/socket-utils-js.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b && tsc -b tsconfig.esm.json"
+  },
+  "dependencies": {
+    "@socketsecurity/vfs": "^1.0.0"
+  }
+}

@@ -1,8 +1,8 @@
 import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
 
 import type {
-  VFSDirent, VFSEntryType, VFSStats, VFSReadStream, VFSWriteStream
-, VFSWatchCallback, VFSWatchErrorCallback
+  VFSDirent, VFSEntryType, VFSStats, VFSReadStream,
+  VFSWriteStream, VFSWatchCallback, VFSWatchErrorCallback
 } from '@socketsecurity/vfs'
 
 const enum FileNodeType {

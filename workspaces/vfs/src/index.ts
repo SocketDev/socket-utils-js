@@ -120,7 +120,8 @@ export type VFSWatchUnsubscribe = () => Promise<void>
 export abstract class VFS<
   B extends Uint8Array = Uint8Array,
   R extends VFSReadStream<B> = VFSReadStream<B>,
-  W extends VFSWriteStream = VFSWriteStream
+  W extends VFSWriteStream = VFSWriteStream,
+  H extends VFSFileHandle = VFSFileHandle
 > {
   // functions that don't go through final link:
   // _symlink, _readSymlink, _rename, _removeFile, _lstat
@@ -161,7 +162,7 @@ export abstract class VFS<
     read: boolean,
     write: boolean,
     truncate: boolean
-  ): Promise<VFSFileHandle>
+  ): Promise<H>
   protected abstract _stat (file: string[]): Promise<VFSStats>
   protected abstract _lstat (file: string[]): Promise<VFSStats>
   protected abstract _exists (file: string[]): Promise<boolean>

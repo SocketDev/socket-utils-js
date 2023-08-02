@@ -1,0 +1,15 @@
+{
+  "extends": "../../shared/tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs-readonly-esm",
+    "module": "ESNext",
+    "lib": ["ESNext", "DOM"],
+    "rootDir": "src",
+    "outDir": "esm"
+  },
+  "include": ["src"],
+  "exclude": [],
+  "references": [{
+    "path": "../vfs"
+  }]
+}

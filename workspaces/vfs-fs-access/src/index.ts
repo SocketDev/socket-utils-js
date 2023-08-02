@@ -642,7 +642,7 @@ export class FSAccessVFS extends VFS {
     let cur = loc.last
     for (let i = loc.rem; i < dir.length; ++i) {
       try {
-        await cur.getDirectoryHandle(dir[i], { create: recursive })
+        cur = await cur.getDirectoryHandle(dir[i], { create: recursive })
       } catch (err) {
         if (err instanceof Error) {
           if (err.name === 'NotFoundError') {

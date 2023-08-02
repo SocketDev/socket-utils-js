@@ -178,9 +178,7 @@ type WatchCallback = {
   err: VFSWatchErrorCallback
 }
 
-export class NodeVFS extends VFS<
-  Buffer
-> {
+export class NodeVFS extends VFS<Buffer> {
   private _base: string
   private _root: string
   private _watchCallbacks: Set<WatchCallback>
