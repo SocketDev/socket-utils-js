@@ -1,27 +1,20 @@
 interface ParsedPath {
   absolute: boolean
   parts: string[]
-  throughLink: boolean
 }
 
 const parseParts = (paths: string[]): ParsedPath => {
   const parts: string[] = []
   const absolute = paths.length > 0 && paths[0].startsWith('/')
-  const throughLink = paths.length > 0 && (
-    paths[paths.length - 1].endsWith('/') ||
-    paths[paths.length - 1].endsWith('/.')
-  )
 
   for (const path of paths) {
     for (const part of path.split('/')) {
-      if (!part || part === '.') continue
       parts.push(part)
     }
   }
 
   return {
     absolute,
-    throughLink,
     parts
   }
 }

@@ -135,7 +135,6 @@ export abstract class VFS<
   // may or may not remove through symlink
   protected abstract _removeFile (
     file: string[],
-    throughLink: boolean,
     signal?: AbortSignal
   ): Promise<void>
   protected abstract _appendFile (
@@ -195,17 +194,16 @@ export abstract class VFS<
   }
 
   removeFile (file: string, options: { signal?: AbortSignal } = {}) {
-    const parsed = path.parse(file)
-    return this._removeFile(parsed.parts, parsed.throughLink, options.signal)
+    return this._removeFile(path.parse(file).parts, options.signal)
   }
 
   async remove (filepath: string, options: { signal?: AbortSignal } = {}) {
-    const parsed = path.parse(filepath)
+    const parts = path.parse(filepath).parts
     try {
-      await this._removeFile(parsed.parts, parsed.throughLink, options.signal)
+      await this._removeFile(parts, options.signal)
     } catch (err) {
       if (err instanceof VFSError && err.code === 'EISDIR') {
-        await this._removeDir(parsed.parts, true, options.signal)
+        await this._removeDir(parts, true, options.signal)
       }
       throw err
     }

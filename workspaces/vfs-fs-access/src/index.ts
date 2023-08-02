@@ -221,6 +221,7 @@ export class FSAccessVFS extends VFS {
     const parents: FileSystemDirectoryHandle[] = []
     let curDir = this._root
     for (let i = 0; i < path.length - 1; ++i) {
+      if (!path[i] || path[i] === '.') continue
       if (path[i] === '..') {
         if (parents.length) {
           curDir = parents.pop()!
@@ -501,7 +502,6 @@ export class FSAccessVFS extends VFS {
 
   protected async _removeFile (
     file: string[],
-    _throughLink: boolean,
     _signal?: AbortSignal | undefined
   ) {
     const loc = await this._locate(file)

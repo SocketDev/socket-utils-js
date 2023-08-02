@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { Writable, addAbortSignal, Readable } from 'node:stream'
+import { Writable, addAbortSignal, Readable, PassThrough } from 'node:stream'
 
 import { subscribe as subscribeWatcher } from '@parcel/watcher'
 import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
@@ -47,6 +47,7 @@ const wrapVFSErr = (err: unknown) => {
     return new VFSError(`${err}`)
   }
   if (err.name === 'AbortError') return err
+  if (err.name === 'VFSError') return err
   let code: VFSErrorCode = 'EUNKNOWN'
   let message = err.message
   if ('code' in err && allowedErrorTypes.has(err.code as string)) {
@@ -79,6 +80,20 @@ const getEntryType = (entry: {
   if (entry.isDirectory()) return 'dir'
   if (entry.isSymbolicLink()) return 'symlink'
   return null
+}
+
+const wrapNodeReadable = (gen: () => Promise<Readable>, signal?: AbortSignal): Readable => {
+  const out = new PassThrough()
+  if (signal) addAbortSignal(signal, out)
+  gen().then(s => s.pipe(out)).catch(err => out.destroy(err))
+  return out
+}
+
+const wrapNodeWritable = (gen: () => Promise<Writable>, signal?: AbortSignal): Writable => {
+  const out = new PassThrough()
+  if (signal) addAbortSignal(signal, out)
+  gen().then(s => s.pipe(out)).catch(err => out.destroy(err))
+  return out
 }
 
 // needed for error wrapping vs Readable.toWeb
@@ -173,17 +188,83 @@ export class NodeVFS extends VFS<
 
   constructor (basePath?: string) {
     super()
-    this._base = path.resolve(basePath ?? '.')
+    this._base = fs.realpathSync.native(basePath ?? '.')
     this._root = path.parse(this._base).root
     this._watchCallbacks = new Set()
   }
 
-  private _fsPath (src: string[]) {
+  private _locOK (p: string) {
+    return p.startsWith(this._base) && (
+      p.length === this._base.length ||
+      p[this._base.length] === path.sep
+    )
+  }
+
+  private async _validatePath (src: string[], thruLast: boolean) {
+    let p = this._base
+    let strict = true
+    let depth = 0
+    for (let i = 0; i < src.length; ++i) {
+      if (src[i] === '..') {
+        p = path.join(p, '..')
+        if (strict && !this._locOK(p)) {
+          return null
+        }
+        continue
+      }
+
+      const child = src[i] && src[i] !== '.' ? p + path.sep + src[i] : p
+      try {
+        const linkPath = await fs.promises.readlink(child)
+        if (++depth > 40) {
+          throw new VFSError('too many symlinks', { code: 'EINVAL' })
+        }
+        if (!thruLast && i === src.length - 1) {
+          p = child
+          break
+        }
+        if (path.isAbsolute(linkPath)) {
+          const parsed = path.parse(linkPath)
+          const newSrc = parsed.dir.split(path.sep)
+          newSrc.push(parsed.base)
+          for (++i; i < src.length; ++i) newSrc.push(src[i])
+          strict = false
+          p = parsed.root
+          src = newSrc
+          i = 0
+        } else {
+          const newSrc = linkPath.split(path.sep)
+          for (++i; i < src.length; ++i) newSrc.push(src[i])
+          strict = true
+          src = newSrc
+          i = 0
+        }
+      } catch (err) {
+        p = child
+        if (err instanceof VFSError) throw err
+        if ((err as { code?: unknown } | undefined)?.code === 'EINVAL') {
+          continue
+        }
+        if ((err as { code?: unknown } | undefined)?.code === 'ENOENT') {
+          if (i === src.length - 1) {
+            // OK if last part doesn't exist
+            continue
+          }
+        }
+        throw wrapVFSErr(err)
+      }
+    }
+
+    return this._locOK(p) ? p : null
+  }
+
+  private async _fsPath (src: string[], throughLast = true) {
     if (!src.length) return this._base
-    if (src[0] === '..') {
+    const loc = await this._validatePath(src, throughLast)
+    if (!loc) {
       throw new VFSError('path outside base directory', { code: 'EINVAL' })
     }
-    return path.join(this._base, ...src)
+    return loc
   }
 
   private _relPath (src: string, absolute: boolean) {
@@ -223,22 +304,23 @@ export class NodeVFS extends VFS<
   }
 
   protected async _appendFile (file: string[], data: Uint8Array, signal?: AbortSignal) {
-    await withVFSErr(fs.promises.writeFile(this._fsPath(file), data, { flag: 'a', signal }))
+    await withVFSErr(fs.promises.writeFile(await this._fsPath(file), data, { flag: 'a', signal }))
   }
 
   protected _appendFileStream (file: string[], signal?: AbortSignal | undefined) {
-    const stream = fs.createWriteStream(this._fsPath(file), { flags: 'a' })
-    if (signal) addAbortSignal(signal, stream)
-
-    return nodeToVFSWritable(stream)
+    return nodeToVFSWritable(wrapNodeWritable(async () => {
+      return fs.createWriteStream(await this._fsPath(file), { flags: 'a' })
+    }, signal))
   }
 
   protected async _copyDir (src: string[], dst: string[], _signal?: AbortSignal | undefined) {
     // unfortunately we have a race condition here, not much we can do
-    const dstPath = this._fsPath(dst)
-    const [srcPath] = await Promise.all([
-      ensureDir(this._fsPath(src)),
-      ensureDir(path.dirname(dstPath))
+    const [srcPath, dstPath] = await Promise.all([
+      this._fsPath(src).then(ensureDir),
+      this._fsPath(dst).then(async p => {
+        await ensureDir(path.dirname(p))
+        return p
+      })
     ])
     // TODO: handle abort signal
     // trailing slashes needed to handle case of symlinks
@@ -247,7 +329,8 @@ export class NodeVFS extends VFS<
 
   protected async _copyFile (src: string[], dst: string[], _signal?: AbortSignal | undefined) {
     // TODO: handle abort signal
-    await withVFSErr(fs.promises.copyFile(this._fsPath(src), this._fsPath(dst)))
+    const [srcPath, dstPath] = await Promise.all([this._fsPath(src), this._fsPath(dst)])
+    await withVFSErr(fs.promises.copyFile(srcPath, dstPath))
   }
 
   protected async _exists (file: string[]) {
@@ -255,7 +338,7 @@ export class NodeVFS extends VFS<
     // We accept that risk here - avoid existsSync to not block
     try {
       // no this.fsPath because this is a public API method
-      await withVFSErr(fs.promises.stat(this._fsPath(file)))
+      await withVFSErr(fs.promises.stat(await this._fsPath(file)))
       return true
     } catch (err) {
       if (err instanceof VFSError && err.code === 'ENOENT') {
@@ -266,12 +349,12 @@ export class NodeVFS extends VFS<
   }
 
   protected async _readDir (dir: string[]) {
-    return await withVFSErr(fs.promises.readdir(this._fsPath(dir)))
+    return await withVFSErr(fs.promises.readdir(await this._fsPath(dir)))
   }
 
   protected async _readDirent (dir: string[]) {
     const dirents = await withVFSErr(
-      fs.promises.readdir(this._fsPath(dir),
+      fs.promises.readdir(await this._fsPath(dir),
       { withFileTypes: true })
     )
     return dirents.map<VFSDirent | null>(ent => {
@@ -284,14 +367,13 @@ export class NodeVFS extends VFS<
   }
 
   protected async _readFile (file: string[], signal?: AbortSignal | undefined) {
-    return await withVFSErr(fs.promises.readFile(this._fsPath(file), { signal }))
+    return await withVFSErr(fs.promises.readFile(await this._fsPath(file), { signal }))
   }
 
   protected _readFileStream (file: string[], signal?: AbortSignal | undefined) {
-    const stream = fs.createReadStream(this._fsPath(file))
-    if (signal) addAbortSignal(signal, stream)
-
-    return nodeToVFSReadable(stream)
+    return nodeToVFSReadable(wrapNodeReadable(async () => {
+      return fs.createReadStream(await this._fsPath(file))
+    }, signal))
   }
 
   protected async _removeDir (
@@ -301,19 +383,18 @@ export class NodeVFS extends VFS<
   ) {
     // TODO: handle abort signal
     // trailing slash helps symlinks
-    await withVFSErr(fs.promises.rm(await ensureDir(this._fsPath(dir) + '/'), { recursive }))
+    await withVFSErr(fs.promises.rm(await ensureDir(await this._fsPath(dir) + '/'), { recursive }))
   }
 
   protected async _removeFile (
     file: string[],
-    throughLink: boolean,
     _signal?: AbortSignal | undefined
   ) {
-    await withVFSErr(fs.promises.unlink(this._fsPath(file) + (throughLink ? '/' : '')))
+    await withVFSErr(fs.promises.unlink(await this._fsPath(file, false)))
   }
 
   protected async _stat (file: string[]) {
-    const stat = await withVFSErr(fs.promises.stat(this._fsPath(file)))
+    const stat = await withVFSErr(fs.promises.stat(await this._fsPath(file)))
     const type = getEntryType(stat)
 
     if (!type) {
@@ -327,7 +408,7 @@ export class NodeVFS extends VFS<
   }
 
   protected async _lstat (file: string[]) {
-    const stat = await withVFSErr(fs.promises.lstat(this._fsPath(file)))
+    const stat = await withVFSErr(fs.promises.lstat(await this._fsPath(file, false)))
     const type = getEntryType(stat)
 
     if (!type) {
@@ -341,48 +422,47 @@ export class NodeVFS extends VFS<
   }
 
   protected async _writeFile (file: string[], data: Uint8Array, signal?: AbortSignal | undefined) {
-    await withVFSErr(fs.promises.writeFile(this._fsPath(file), data, { signal }))
+    await withVFSErr(fs.promises.writeFile(await this._fsPath(file), data, { signal }))
   }
 
   protected _writeFileStream (file: string[], signal?: AbortSignal | undefined) {
-    const stream = fs.createWriteStream(this._fsPath(file))
-    if (signal) addAbortSignal(signal, stream)
-
-    return nodeToVFSWritable(stream)
+    return nodeToVFSWritable(wrapNodeWritable(async () => {
+      return fs.createWriteStream(await this._fsPath(file))
+    }, signal))
   }
 
   protected async _truncate (file: string[], to: number) {
-    await withVFSErr(fs.promises.truncate(this._fsPath(file), to))
+    await withVFSErr(fs.promises.truncate(await this._fsPath(file), to))
   }
 
   protected async _symlink (target: string[], link: string[], relative: boolean) {
     // verify this target path can't do parent traversal, relative or not
-    const outPath = this._fsPath(target)
     await withVFSErr(fs.promises.symlink(
-      relative ? target.join(path.sep) : outPath,
-      this._fsPath(link)
+      (relative ? '' : this._base + path.sep) + target.join(path.sep),
+      await this._fsPath(link)
     ))
   }
 
   protected async _realPath (link: string[]) {
-    const result = await withVFSErr(fs.promises.realpath(this._fsPath(link)))
+    const result = await withVFSErr(fs.promises.realpath(await this._fsPath(link)))
     return this._relPath(result, true)
   }
 
   protected async _readSymlink (link: string[]) {
-    const fsLoc = this._fsPath(link)
+    const fsLoc = await this._fsPath(link, false)
     const result = await withVFSErr(fs.promises.readlink(fsLoc))
     const targetPath = path.resolve(path.dirname(fsLoc), result)
     return this._relPath(targetPath, true)
   }
 
   protected async _rename (src: string[], dst: string[]) {
-    await withVFSErr(fs.promises.rename(this._fsPath(src), this._fsPath(dst)))
+    const [srcPath, dstPath] = await Promise.all([this._fsPath(src), this._fsPath(dst)])
+    await withVFSErr(fs.promises.rename(srcPath, dstPath))
   }
 
   protected async _mkdir (dir: string[]) {
     // trailing slash allows making through symlinks
-    await withVFSErr(fs.promises.mkdir(this._fsPath(dir) + '/'))
+    await withVFSErr(fs.promises.mkdir(await this._fsPath(dir) + '/'))
   }
 
   protected async _openFile (file: string[], read: boolean, write: boolean, truncate: boolean) {
@@ -396,7 +476,7 @@ export class NodeVFS extends VFS<
       flag |= fs.constants.O_TRUNC
     }
 
-    return await NodeVFSFileHandle.open(this._fsPath(file), flag)
+    return await NodeVFSFileHandle.open(await this._fsPath(file), flag)
   }
 
   protected async _watch (glob: string, onEvent: VFSWatchCallback, onError: VFSWatchErrorCallback) {
