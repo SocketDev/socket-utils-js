@@ -124,7 +124,7 @@ export abstract class VFS<
   protected abstract _readDir (dir: string[]): Promise<string[]>
   protected abstract _readDirent (dir: string[]): Promise<VFSDirent[]>
   // always makes dir through symlinks
-  protected abstract _mkdir (dir: string[]): Promise<void>
+  protected abstract _mkdir (dir: string[], recursive: boolean): Promise<void>
   protected abstract _readFile (file: string[], signal?: AbortSignal): Promise<B>
   protected abstract _readFileStream (file: string[], signal?: AbortSignal): R
   protected abstract _removeDir (
@@ -363,8 +363,8 @@ export abstract class VFS<
     return this._rename(path.parse(src).parts, path.parse(dst).parts)
   }
 
-  mkdir (dir: string) {
-    return this._mkdir(path.parse(dir).parts)
+  mkdir (dir: string, options: { recursive?: boolean } = {}) {
+    return this._mkdir(path.parse(dir).parts, options.recursive ?? false)
   }
 }
 

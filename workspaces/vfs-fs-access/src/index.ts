@@ -50,7 +50,7 @@ const wrapWriteStream = (
         const writer = inner.getWriter()
         signal?.addEventListener('abort', () => {
           writer.abort(wrapVFSErr(signal.reason)).catch(() => {})
-        })
+        }, { once: true })
         resolveWriter(writer)
       } catch (err) {
         controller.error(err)
@@ -90,7 +90,7 @@ const wrapReadStream = (
         const reader = inner.getReader()
         signal?.addEventListener('abort', () => {
           reader.cancel(wrapVFSErr(signal.reason)).catch(() => {})
-        })
+        }, { once: true })
         resolveReader(reader)
       } catch (err) {
         controller.error(err)
@@ -213,7 +213,7 @@ export class FSAccessVFS extends VFS {
     this._root = handle
   }
 
-  private async _locate (path: string[]) {
+  private async _partialLocate (path: string[], expectAll: boolean) {
     if (!path.length) return null
     if (this._root.kind !== 'directory') {
       throw new VFSError('cannot traverse single-file filesystem', { code: 'ENOTDIR' })
@@ -232,24 +232,38 @@ export class FSAccessVFS extends VFS {
         curDir = await curDir.getDirectoryHandle(path[i])
         parents.push(curDir)
       } catch (err) {
-        if (err instanceof Error && err.name === 'TypeMismatchError') {
-          throw new VFSError('not a directory', { code: 'ENOTDIR', cause: err })
+        if (err instanceof Error) {
+          if (err.name === 'TypeMismatchError') {
+            throw new VFSError('not a directory', { code: 'ENOTDIR', cause: err })
+          }
+          if (err.name === 'NotFoundError' && !expectAll) {
+            return {
+              last: curDir,
+              rem: i
+            }
+          }
         }
         throw wrapVFSErr(err)
       }
     }
-
     if (path[path.length - 1] === '..') {
       if (parents.length < 2) return null
       return {
-        parent: parents[parents.length - 2],
-        name: parents[parents.length - 1].name
+        last: parents[parents.length - 2],
+        rem: parents.length - 1
       }
     }
-
     return {
-      parent: curDir,
-      name: path[path.length - 1]
+      last: curDir,
+      rem: path.length - 1
+    }
+  }
+
+  private async _locate (path: string[]) {
+    const partial = await this._partialLocate(path, true)
+    return partial && {
+      parent: partial.last,
+      name: path[partial.rem]
     }
   }
 
@@ -403,10 +417,21 @@ export class FSAccessVFS extends VFS {
 
   protected async _exists (file: string[]) {
     try {
-      await this._locate(file)
+      const result = await this._locate(file)
+      if (!result) return true
+      try {
+        await result.parent.getFileHandle(result.name)
+      } catch (err) {
+        if (!(err instanceof Error) || err.name !== 'TypeMismatchError') {
+          throw wrapVFSErr(err)
+        }
+      }
       return true
     } catch (err) {
-      return false
+      if (err instanceof VFSError && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+        return false
+      }
+      throw err
     }
   }
 
@@ -609,25 +634,30 @@ export class FSAccessVFS extends VFS {
     }
   }
 
-  protected async _mkdir (dir: string[]) {
-    const loc = await this._locate(dir)
+  protected async _mkdir (dir: string[], recursive: boolean) {
+    const loc = await this._partialLocate(dir, !recursive)
     if (!loc) {
       throw new VFSError('cannot create root directory', { code: 'EINVAL' })
     }
-    try {
-      await loc.parent.getDirectoryHandle(loc.name)
-    } catch (err) {
-      if (err instanceof Error) {
-        if (err.name === 'NotFoundError') {
-          await withVFSErr(loc.parent.getDirectoryHandle(loc.name, { create: true }))
-          return
-        } else if (err.name === 'TypeMismatchError') {
-          throw new VFSError('file exists', { code: 'EEXIST' })
+    let cur = loc.last
+    for (let i = loc.rem; i < dir.length; ++i) {
+      try {
+        await cur.getDirectoryHandle(dir[i], { create: recursive })
+      } catch (err) {
+        if (err instanceof Error) {
+          if (err.name === 'NotFoundError') {
+            await withVFSErr(cur.getDirectoryHandle(dir[i], { create: true }))
+            return
+          } else if (err.name === 'TypeMismatchError') {
+            throw new VFSError('file exists', { code: 'EEXIST' })
+          }
         }
+        throw wrapVFSErr(err)
       }
-      throw wrapVFSErr(err)
     }
-    throw new VFSError('directory already exists', { code: 'EEXIST' })
+    if (!recursive) {
+      throw new VFSError('directory already exists', { code: 'EEXIST' })
+    }
   }
 
   protected async _truncate (file: string[], to: number) {

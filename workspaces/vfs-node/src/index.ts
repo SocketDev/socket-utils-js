@@ -200,7 +200,7 @@ export class NodeVFS extends VFS<
     )
   }
 
-  private async _validatePath (src: string[], thruLast: boolean) {
+  private async _validatePath (src: string[], thruLast: boolean, breakEarly: boolean) {
     let p = this._base
     let strict = true
     let depth = 0
@@ -213,7 +213,7 @@ export class NodeVFS extends VFS<
         continue
       }
 
-      const child = src[i] && src[i] !== '.' ? p + path.sep + src[i] : p
+      const child = p + path.sep + src[i]
       try {
         const linkPath = await fs.promises.readlink(child)
         if (++depth > 40) {
@@ -246,6 +246,12 @@ export class NodeVFS extends VFS<
           continue
         }
         if ((err as { code?: unknown } | undefined)?.code === 'ENOENT') {
+          if (breakEarly) {
+            for (++i; i < src.length; ++i) {
+              p += path.sep + src[i]
+            }
+            break
+          }
           if (i === src.length - 1) {
             // OK if last part doesn't exist
             continue
@@ -258,9 +264,9 @@ export class NodeVFS extends VFS<
     return this._locOK(p) ? p : null
   }
 
-  private async _fsPath (src: string[], throughLast = true) {
+  private async _fsPath (src: string[], throughLast = true, breakEarly = false) {
     if (!src.length) return this._base
-    const loc = await this._validatePath(src, throughLast)
+    const loc = await this._validatePath(src, throughLast, breakEarly)
     if (!loc) {
       throw new VFSError('path outside base directory', { code: 'EINVAL' })
     }
@@ -323,8 +329,7 @@ export class NodeVFS extends VFS<
       })
     ])
     // TODO: handle abort signal
-    // trailing slashes needed to handle case of symlinks
-    await withVFSErr(fs.promises.cp(srcPath + '/', dstPath + '/', { recursive: true }))
+    await withVFSErr(fs.promises.cp(srcPath, dstPath, { recursive: true, verbatimSymlinks: true }))
   }
 
   protected async _copyFile (src: string[], dst: string[], _signal?: AbortSignal | undefined) {
@@ -341,7 +346,7 @@ export class NodeVFS extends VFS<
       await withVFSErr(fs.promises.stat(await this._fsPath(file)))
       return true
     } catch (err) {
-      if (err instanceof VFSError && err.code === 'ENOENT') {
+      if (err instanceof VFSError && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
         return false
       }
       throw err
@@ -382,8 +387,7 @@ export class NodeVFS extends VFS<
     _signal?: AbortSignal | undefined
   ) {
     // TODO: handle abort signal
-    // trailing slash helps symlinks
-    await withVFSErr(fs.promises.rm(await ensureDir(await this._fsPath(dir) + '/'), { recursive }))
+    await withVFSErr(fs.promises.rm(await ensureDir(await this._fsPath(dir)), { recursive }))
   }
 
   protected async _removeFile (
@@ -439,7 +443,7 @@ export class NodeVFS extends VFS<
     // verify this target path can't do parent traversal, relative or not
     await withVFSErr(fs.promises.symlink(
       (relative ? '' : this._base + path.sep) + target.join(path.sep),
-      await this._fsPath(link)
+      await this._fsPath(link, false)
     ))
   }
 
@@ -456,13 +460,12 @@ export class NodeVFS extends VFS<
   }
 
   protected async _rename (src: string[], dst: string[]) {
-    const [srcPath, dstPath] = await Promise.all([this._fsPath(src), this._fsPath(dst)])
+    const [srcPath, dstPath] = await Promise.all([this._fsPath(src, false), this._fsPath(dst)])
     await withVFSErr(fs.promises.rename(srcPath, dstPath))
   }
 
-  protected async _mkdir (dir: string[]) {
-    // trailing slash allows making through symlinks
-    await withVFSErr(fs.promises.mkdir(await this._fsPath(dir) + '/'))
+  protected async _mkdir (dir: string[], recursive: boolean) {
+    await withVFSErr(fs.promises.mkdir(await this._fsPath(dir, true, true), { recursive }))
   }
 
   protected async _openFile (file: string[], read: boolean, write: boolean, truncate: boolean) {

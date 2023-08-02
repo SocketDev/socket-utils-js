@@ -1,4 +1,4 @@
-import { VFS, VFSEntryType, VFSError, VFSFileHandle, VFSWriteStream, path as vfsPath } from '@socketsecurity/vfs'
+import { VFS, VFSEntryType, VFSError, VFSFileHandle, VFSStats, VFSWriteStream, path as vfsPath } from '@socketsecurity/vfs'
 
 const enum FileNodeType {
   File = 0,
@@ -261,29 +261,37 @@ export class MemVFS extends VFS {
 
   private _lfind (ctx: FindContext) {
     for (; ctx.i < ctx.path.length; ++ctx.i) {
+      const part = ctx.path[ctx.i]
       if (ctx.node.type === FileNodeType.Dir) {
-        let child = ctx.node.children.get(ctx.path[ctx.i])
-        if (!child) {
-          if (ctx.i === ctx.path.length - 1) {
-            if (ctx.create === FileNodeType.File) {
-              child = {
-                type: FileNodeType.File,
-                content: null
-              }
-            } else if (ctx.create === FileNodeType.Dir) {
-              child = {
-                type: FileNodeType.Dir,
-                children: new Map()
+        if (!part || part === '.') continue
+        if (part === '..') {
+          if (ctx.parents.length) {
+            ctx.node = ctx.parents.pop()!
+          }
+        } else {
+          let child = ctx.node.children.get(part)
+          if (!child) {
+            if (ctx.i === ctx.path.length - 1) {
+              if (ctx.create === FileNodeType.File) {
+                child = {
+                  type: FileNodeType.File,
+                  content: null
+                }
+              } else if (ctx.create === FileNodeType.Dir) {
+                child = {
+                  type: FileNodeType.Dir,
+                  children: new Map()
+                }
               }
             }
+            if (!child) {
+              throw new VFSError('no such file or directory', { code: 'ENOENT' })
+            }
+            ctx.node.children.set(part, child)
           }
-          if (!child) {
-            throw new VFSError('no such file or directory', { code: 'ENOENT' })
-          }
-          ctx.node.children.set(ctx.path[ctx.i], child)
+          ctx.parents.push(ctx.node)
+          ctx.node = child
         }
-        ctx.parents.push(ctx.node)
-        ctx.node = child
       } else if (ctx.node.type === FileNodeType.File) {
         throw new VFSError('not a directory', { code: 'ENOTDIR' })
       } else {
@@ -345,6 +353,15 @@ export class MemVFS extends VFS {
     create: FindContext['create'] = -1
   ): MountFindResult | NonMountFindResult {
     if (!this._root) {
+      if (!path.length && create !== -1) {
+        this._root = create === FileNodeType.Dir
+          ? { type: FileNodeType.Dir, children: new Map() }
+          : { type: FileNodeType.File, content: null }
+        return {
+          mount: false,
+          node: this._root
+        }
+      }
       throw new VFSError('no such file or directory', { code: 'ENOENT' })
     }
     const ctx: FindContext = {
@@ -375,13 +392,6 @@ export class MemVFS extends VFS {
   }
 
   private _file (path: string[], create = false): MountFindResult | FileFindResult {
-    if (!this._root && !path.length && create) {
-      this._root = { type: FileNodeType.File, content: null }
-      return {
-        mount: false,
-        node: this._root
-      }
-    }
     const result = this._entry(path, true, create ? FileNodeType.File : -1)
     if (!result.mount && result.node.type !== FileNodeType.File) {
       throw new VFSError('not a file', { code: 'EISDIR' })
@@ -390,13 +400,6 @@ export class MemVFS extends VFS {
   }
 
   private _dir (path: string[], create = false): MountFindResult | DirFindResult {
-    if (!this._root && !path.length && create) {
-      this._root = { type: FileNodeType.Dir, children: new Map() }
-      return {
-        mount: false,
-        node: this._root
-      }
-    }
     const result = this._entry(path, true, create ? FileNodeType.Dir : -1)
     if (!result.mount && result.node.type !== FileNodeType.Dir) {
       throw new VFSError('not a directory', { code: 'ENOTDIR' })
@@ -662,7 +665,7 @@ export class MemVFS extends VFS {
       start: ctrl => {
         signal?.addEventListener('abort', err => {
           ctrl.error(wrapVFSErr(err))
-        })
+        }, { once: true })
       },
       pull: ctrl => {
         const readResult = this._readRaw(node.content)
@@ -713,7 +716,6 @@ export class MemVFS extends VFS {
       return result.vfs['_appendFileStream'](result.path, signal)
     }
     const len = result.node.content ? result.node.content.len : 0
-    // not sure if we need to handle aborts/closes here
     return this._writeRawStream(result.node, len, signal)
   }
 
@@ -721,7 +723,7 @@ export class MemVFS extends VFS {
     into: FileNode,
     vfs: VFS,
     path: string[],
-    signal: AbortSignal
+    signal?: AbortSignal
   ) {
     // for pathologically slow stat
     let cancelReserve = false
@@ -743,7 +745,7 @@ export class MemVFS extends VFS {
     into: VFS,
     path: string[],
     from: FileNode,
-    signal: AbortSignal
+    signal?: AbortSignal
   ) {
     await withVFSErr(
       this._readRawStream(from).pipeTo(into['_writeFileStream'](path), { signal })
@@ -755,7 +757,7 @@ export class MemVFS extends VFS {
     intoPath: string[],
     from: VFS,
     fromPath: string[],
-    signal: AbortSignal
+    signal?: AbortSignal
   ) {
     await withVFSErr(
       from['_readFileStream'](fromPath).pipeTo(
@@ -768,7 +770,6 @@ export class MemVFS extends VFS {
   private async _copyDirFromMount (
     into: DirNode,
     from: VFS,
-    pathToMount: string[],
     path: string[],
     signal: AbortSignal
   ) {
@@ -795,7 +796,6 @@ export class MemVFS extends VFS {
         childCopies.push(this._copyDirFromMount(
           childNode,
           from,
-          pathToMount,
           subPath,
           signal
         ))
@@ -811,12 +811,15 @@ export class MemVFS extends VFS {
           signal
         ))
       } else if (entry.type === 'symlink') {
-        childCopies.push(from['_realPath'](subPath).then(resolved => {
-          const { parts } = vfsPath.parse(resolved)
+        childCopies.push(from['_readSymlink'](subPath).then(resolved => {
+          const parsed = vfsPath.parse(resolved)
+          // verbatim symlinks
+          // TODO: these almost always break
+          // best used to copy mount -> local -> another mount
           const childNode: SymlinkNode = {
             type: FileNodeType.Symlink,
-            to: pathToMount.concat(parts),
-            relative: false
+            to: parsed.parts,
+            relative: !parsed.absolute
           }
           into.children.set(entry.name, childNode)
         }))
@@ -839,7 +842,8 @@ export class MemVFS extends VFS {
       } else if (node.type === FileNodeType.File) {
         childCopies.push(this._copyFileToMount(into, mountPath, node, signal))
       } else if (node.type === FileNodeType.Symlink) {
-        // TODO: how to handle this with cycles?
+        // verbatim symlinks
+        childCopies.push(into['_symlink'](node.to, mountPath, node.relative))
       } else if (node.type === FileNodeType.Mount) {
         childCopies.push(this._copyDirBetweenMounts(
           into,
@@ -883,7 +887,7 @@ export class MemVFS extends VFS {
     this._writeRaw(dst, buf, 0)
   }
 
-  private async _copyDirNodes (src: DirNode, srcPath: string[], dst: DirNode, signal: AbortSignal) {
+  private async _copyDirNodes (src: DirNode, dst: DirNode, signal: AbortSignal) {
     const childCopies: Promise<void>[] = []
     for (const [name, node] of src.children.entries()) {
       const curChild = dst.children.get(name)
@@ -906,7 +910,7 @@ export class MemVFS extends VFS {
           ? curChild
           : { type: FileNodeType.Dir, children: new Map() }
         dst.children.set(name, childNode)
-        childCopies.push(this._copyDirNodes(node, srcPath.concat(name), childNode, signal))
+        childCopies.push(this._copyDirNodes(node, childNode, signal))
       } else if (node.type === FileNodeType.File) {
         const childNode: FileNode = curChild && curChild.type === FileNodeType.File
           ? curChild
@@ -914,23 +918,148 @@ export class MemVFS extends VFS {
         dst.children.set(name, childNode)
         this._copyFileNodes(node, childNode)
       } else if (node.type === FileNodeType.Symlink) {
-        let to = node.to
-        if (node.relative) {
-          const newTo = srcPath
-          for (const part of to) {
-            if (part === '..')
-          }
-        }
         const childNode: SymlinkNode = {
           type: FileNodeType.Symlink,
-          to: node.relative ? srcPath.concat(node.)
+          to: node.to,
+          relative: node.relative
         }
+        dst.children.set(name, childNode)
+      } else if (srcResolvedType === 'dir') {
+        const childNode: DirNode = curChild && curChild.type === FileNodeType.Dir
+          ? curChild
+          : { type: FileNodeType.Dir, children: new Map() }
+          dst.children.set(name, childNode)
+        childCopies.push(this._copyDirFromMount(
+          childNode,
+          node.vfs,
+          node.mountPath,
+          signal
+        ))
+      } else if (srcResolvedType === 'file') {
+        const childNode: FileNode = curChild && curChild.type === FileNodeType.File
+          ? curChild
+          : { type: FileNodeType.File, content: null }
+        dst.children.set(name, childNode)
+        childCopies.push(this._copyFileFromMount(childNode, node.vfs, node.mountPath, signal))
+      } else {
+        // symlink-rooted mount should be impossible
+        // just ignore for now
       }
     }
   }
 
   protected async _copyDir (src: string[], dst: string[], signal?: AbortSignal) {
-    const srcNode = this._dir(src, true)
+    const srcNode = this._dir(src)
     const dstNode = this._dir(dst, true)
+    const ctrl = new AbortController()
+    signal?.addEventListener('abort', () => ctrl.abort(signal.reason), { once: true })
+    try {
+      if (srcNode.mount) {
+        if (dstNode.mount) {
+          return await this._copyDirBetweenMounts(
+            dstNode.vfs,
+            dstNode.path,
+            srcNode.vfs,
+            srcNode.path,
+            ctrl.signal
+          )
+        }
+        return await this._copyDirFromMount(
+          dstNode.node,
+          srcNode.vfs,
+          srcNode.path,
+          ctrl.signal
+        )
+      }
+      if (dstNode.mount) {
+        return await this._copyDirToMount(
+          dstNode.vfs,
+          dstNode.path,
+          srcNode.node,
+          ctrl.signal
+        )
+      }
+      return await this._copyDirNodes(
+        srcNode.node,
+        dstNode.node,
+        ctrl.signal
+      )
+    } catch (err) {
+      ctrl.abort(err)
+      throw err
+    }
+  }
+
+  protected async _copyFile (src: string[], dst: string[], signal?: AbortSignal) {
+    const srcNode = this._file(src)
+    const dstNode = this._file(dst, true)
+    if (srcNode.mount) {
+      if (dstNode.mount) {
+        return await this._copyFileBetweenMounts(
+          dstNode.vfs,
+          dstNode.path,
+          srcNode.vfs,
+          srcNode.path,
+          signal
+        )
+      }
+      return await this._copyFileFromMount(
+        dstNode.node,
+        srcNode.vfs,
+        srcNode.path,
+        signal
+      )
+    }
+    if (dstNode.mount) {
+      return await this._copyFileToMount(
+        dstNode.vfs,
+        dstNode.path,
+        srcNode.node,
+        signal
+      )
+    }
+    return this._copyFileNodes(srcNode.node, dstNode.node)
+  }
+
+  protected async _exists (file: string[]) {
+    try {
+      const result = this._entry(file, true, -1)
+      if (result.mount) {
+        return result.vfs['_exists'](result.path)
+      }
+      return true
+    } catch (err) {
+      if (err instanceof VFSError && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+        return false
+      }
+      throw err
+    }
+  }
+
+  protected async _lstat (file: string[]): Promise<VFSStats> {
+    const result = this._entry(file, false)
+    if (result.mount) {
+      return result.vfs['_lstat'](result.path)
+    }
+    if (result.node.type === FileNodeType.File) {
+      return {
+        type: 'file',
+        size: result.node.content ? result.node.content.len : 0
+      }
+    }
+    if (result.node.type === FileNodeType.Dir) {
+      return {
+        type: 'dir',
+        size: 0
+      }
+    }
+    return {
+      type: 'symlink',
+      size: 0
+    }
+  }
+
+  protected async _mkdir (dir: string[], recursive: boolean) {
+    this._entry()
   }
 }
