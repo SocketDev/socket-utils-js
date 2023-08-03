@@ -1,7 +1,11 @@
 /// <reference types="node" />
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { Writable, addAbortSignal, Readable, PassThrough } from 'node:stream'
+import {
+  ByteLengthQueuingStrategy,
+  ReadableStream as NodeReadableStream,
+  WritableStream as NodeWritableStream,
+} from 'node:stream/web'
 
 import { subscribe as subscribeWatcher } from '@parcel/watcher'
 import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
@@ -16,15 +20,16 @@ import type {
   VFSReadStream, VFSWatchCallback, VFSWatchErrorCallback
 } from '@socketsecurity/vfs'
 import type { FileHandle } from 'node:fs/promises'
-import type {
-  ReadableStream as NodeReadableStream,
-  WritableStream as NodeWritableStream
-} from 'node:stream/web'
 
 // unfortunate but necessary
 declare global {
   interface ReadableStream<R = any> extends NodeReadableStream<R> {}
   interface WritableStream<W = any> extends NodeWritableStream<W> {}
+}
+
+interface PatchedBYOBRequest {
+  view: NodeJS.ArrayBufferView
+  respond (bytesWritten: number): void
 }
 
 const allowedErrorTypes = new Set([
@@ -82,37 +87,113 @@ const getEntryType = (entry: {
   return null
 }
 
-const wrapNodeReadable = (gen: () => Promise<Readable>, signal?: AbortSignal): Readable => {
-  const out = new PassThrough()
-  if (signal) addAbortSignal(signal, out)
-  gen().then(s => s.pipe(out)).catch(err => out.destroy(err))
-  return out
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) {
+    throw wrapVFSErr(signal.reason)
+  }
 }
 
-const wrapNodeWritable = (gen: () => Promise<Writable>, signal?: AbortSignal): Writable => {
-  const out = new PassThrough()
-  if (signal) addAbortSignal(signal, out)
-  gen().then(s => s.pipe(out)).catch(err => out.destroy(err))
-  return out
-}
-
-// needed for error wrapping vs Readable.toWeb
-const nodeToVFSReadable = (stream: Readable): VFSReadStream<Buffer> => {
-  const webStream = Readable.toWeb(stream)
-  stream.prependOnceListener('error', err => {
-    void webStream.cancel(wrapVFSErr(err))
+const createReadStream = (
+  getPath: () => Promise<string>,
+  signal?: AbortSignal
+): VFSReadStream => {
+  let resolveFileHandle!: (handle: FileHandle) => void
+  const handlePromise: Promise<FileHandle> = new Promise(resolve => {
+    resolveFileHandle = resolve
   })
-  // cast basically assumes all Node Readable streams will have Node.js' extensions
-  return webStream as VFSReadStream<Buffer>
+  throwIfAborted(signal)
+  return new NodeReadableStream({
+    async start (ctrl) {
+      try {
+        const filePath = await getPath()
+        const handle = await withVFSErr(
+          fs.promises.open(filePath, fs.promises.constants.O_RDONLY)
+        )
+        throwIfAborted(signal)
+        signal?.addEventListener('abort', () => {
+          ctrl.error(wrapVFSErr(signal.reason))
+        }, { once: true })
+        resolveFileHandle(handle)
+      } catch (err) {
+        ctrl.error(err)
+      }
+    },
+    async pull (ctrl) {
+      const handle = await handlePromise
+      const byob = ctrl.byobRequest as unknown as PatchedBYOBRequest | null | undefined
+      if (byob) {
+        const readLen = Math.min(byob.view.byteLength, ctrl.desiredSize!)
+        const result = await handle.read(byob.view, 0, readLen)
+        byob.respond(result.bytesRead)
+        if (!result.bytesRead) await handle.close()
+      } else {
+        const buf = Buffer.allocUnsafeSlow(ctrl.desiredSize!)
+        const result = await handle.read(buf, 0, ctrl.desiredSize!)
+        ctrl.enqueue(buf.subarray(0, result.bytesRead))
+        if (!result.bytesRead) await handle.close()
+      }
+    },
+    async cancel () {
+      const handle = await handlePromise
+      await handle.close()
+    },
+    autoAllocateChunkSize: 65536,
+    type: 'bytes'
+  }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
 }
 
-const nodeToVFSWritable = (stream: Writable): VFSWriteStream => {
-  const webStream = Writable.toWeb(stream)
-  stream.prependOnceListener('error', err => {
-    void webStream.abort(wrapVFSErr(err))
+const createWriteStream = (
+  getPath: () => Promise<string>,
+  append: boolean,
+  signal?: AbortSignal
+): VFSWriteStream => {
+  let resolveFileHandle!: (handle: FileHandle) => void
+  const handlePromise: Promise<FileHandle> = new Promise(resolve => {
+    resolveFileHandle = resolve
   })
-  // not needed but might be if lib.dom.d.ts is loaded
-  return webStream as VFSWriteStream
+  let dead = false
+  throwIfAborted(signal)
+  return new NodeWritableStream<Uint8Array>({
+    async start (ctrl) {
+      try {
+        const filePath = await getPath()
+        let flag = fs.promises.constants.O_CREAT | fs.promises.constants.O_WRONLY
+        if (append) {
+          flag |= fs.promises.constants.O_APPEND
+        } else {
+          flag |= fs.promises.constants.O_TRUNC
+        }
+        const handle = await withVFSErr(fs.promises.open(filePath, flag))
+        throwIfAborted(signal)
+        signal?.addEventListener('abort', () => {
+          dead = true
+          ctrl.error(wrapVFSErr(signal.reason))
+        }, { once: true })
+        resolveFileHandle(handle)
+      } catch (err) {
+        ctrl.error(err)
+      }
+    },
+    async write (chunk) {
+      const handle = await handlePromise
+      let offset = 0
+      while (offset < chunk.length) {
+        if (dead) break
+        const result = await handle.write(chunk, offset)
+        offset += result.bytesWritten
+      }
+    },
+    async close () {
+      const handle = await handlePromise
+      dead = true
+      await handle.close()
+    },
+    async abort () {
+      const handle = await handlePromise
+      dead = true
+      await handle.close()
+    }
+  })
 }
 
 class NodeVFSFileHandle extends VFSFileHandle {
@@ -178,7 +259,7 @@ type WatchCallback = {
   err: VFSWatchErrorCallback
 }
 
-export class NodeVFS extends VFS<Buffer> {
+export class NodeVFS extends VFS {
   private _base: string
   private _root: string
   private _watchCallbacks: Set<WatchCallback>
@@ -229,14 +310,13 @@ export class NodeVFS extends VFS<Buffer> {
           strict = false
           p = parsed.root
           src = newSrc
-          i = 0
         } else {
           const newSrc = linkPath.split(path.sep)
           for (++i; i < src.length; ++i) newSrc.push(src[i])
           strict = true
           src = newSrc
-          i = 0
         }
+        i = -1
       } catch (err) {
         p = child
         if (err instanceof VFSError) throw err
@@ -252,7 +332,7 @@ export class NodeVFS extends VFS<Buffer> {
           }
           if (i === src.length - 1) {
             // OK if last part doesn't exist
-            continue
+            break
           }
         }
         throw wrapVFSErr(err)
@@ -266,7 +346,7 @@ export class NodeVFS extends VFS<Buffer> {
     if (!src.length) return this._base
     const loc = await this._validatePath(src, throughLast, breakEarly)
     if (!loc) {
-      throw new VFSError('path outside base directory', { code: 'EINVAL' })
+      throw new VFSError('path outside base directory', { code: 'EPERM' })
     }
     return loc
   }
@@ -312,9 +392,7 @@ export class NodeVFS extends VFS<Buffer> {
   }
 
   protected _appendFileStream (file: string[], signal?: AbortSignal | undefined) {
-    return nodeToVFSWritable(wrapNodeWritable(async () => {
-      return fs.createWriteStream(await this._fsPath(file), { flags: 'a' })
-    }, signal))
+    return createWriteStream(() => this._fsPath(file), true, signal)
   }
 
   protected async _copyDir (src: string[], dst: string[], _signal?: AbortSignal | undefined) {
@@ -374,9 +452,7 @@ export class NodeVFS extends VFS<Buffer> {
   }
 
   protected _readFileStream (file: string[], signal?: AbortSignal | undefined) {
-    return nodeToVFSReadable(wrapNodeReadable(async () => {
-      return fs.createReadStream(await this._fsPath(file))
-    }, signal))
+    return createReadStream(() => this._fsPath(file), signal)
   }
 
   protected async _removeDir (
@@ -428,9 +504,7 @@ export class NodeVFS extends VFS<Buffer> {
   }
 
   protected _writeFileStream (file: string[], signal?: AbortSignal | undefined) {
-    return nodeToVFSWritable(wrapNodeWritable(async () => {
-      return fs.createWriteStream(await this._fsPath(file))
-    }, signal))
+    return createWriteStream(() => this._fsPath(file), false, signal)
   }
 
   protected async _truncate (file: string[], to: number) {
@@ -505,7 +579,7 @@ export class NodeVFS extends VFS<Buffer> {
     }
     this._watchCallbacks.add(entry)
     if (!this._watcher) {
-      this._watcher = await withVFSErr(subscribeWatcher(this._base, this._onWatchEvent))
+      this._watcher = await withVFSErr(subscribeWatcher(this._base, this._onWatchEvent.bind(this)))
     }
     return async () => {
       this._watchCallbacks.delete(entry)

@@ -1,6 +1,6 @@
 import { VFS, VFSError, VFSFileHandle } from '@socketsecurity/vfs'
 
-import type { VFSReadStream, VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
+import type { VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
 
 const noWrite = () => {
   throw new VFSError('cannot write to readonly filesystem', { code: 'ENOSYS' })
@@ -33,12 +33,8 @@ class ReadonlyVFSFileHandleWrapper extends ReadonlyVFSFileHandle {
   }
 }
 
-export abstract class ReadonlyVFS<
-  B extends Uint8Array = Uint8Array,
-  R extends VFSReadStream<B> = VFSReadStream<B>,
-  H extends ReadonlyVFSFileHandle = ReadonlyVFSFileHandle
-> extends VFS<B, R, never, H> {
-  protected abstract _openFileReadonly (file: string[]): Promise<H>
+export abstract class ReadonlyVFS extends VFS {
+  protected abstract _openFileReadonly (file: string[]): Promise<ReadonlyVFSFileHandle>
   protected async _appendFile () { return noWrite() }
   protected _appendFileStream () { return noWrite() }
   protected async _copyDir () { return noWrite() }
@@ -60,13 +56,10 @@ export abstract class ReadonlyVFS<
   protected _writeFileStream () { return noWrite() }
 }
 
-class ReadonlyVFSWrapper<
-  B extends Uint8Array = Uint8Array,
-  R extends VFSReadStream<B> = VFSReadStream<B>
-> extends ReadonlyVFS<B, R> {
-  private _inner: VFS<B, R>
+class ReadonlyVFSWrapper extends ReadonlyVFS {
+  private _inner: VFS
 
-  constructor (vfs: VFS<B, R>) {
+  constructor (vfs: VFS) {
     super()
     this._inner = vfs
   }
@@ -118,9 +111,6 @@ class ReadonlyVFSWrapper<
   }
 }
 
-export function makeReadonly <
-  B extends Uint8Array,
-  R extends VFSReadStream<B>
-> (fs: VFS<B, R>): ReadonlyVFS<B, R> {
+export function makeReadonly (fs: VFS): ReadonlyVFS {
   return new ReadonlyVFSWrapper(fs)
 }

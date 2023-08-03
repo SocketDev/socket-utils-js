@@ -24,15 +24,16 @@ const resolve = (parsed: ParsedPath) => {
   let ptr = -1
   let topPtr = -1
   for (let i = 0; i < parsed.parts.length; ++i) {
-    if (parsed.parts[i] === '..') {
+    const part = parsed.parts[i]
+    if (part === '..') {
       if (ptr === topPtr) {
         if (!parsed.absolute) {
           parsed.parts[++ptr] = '..'
           ++topPtr
         }
       } else --ptr
-    } else if (++ptr !== i) {
-      parsed.parts[ptr] = parsed.parts[i]
+    } else if (part && part !== '.' && ++ptr !== i) {
+      parsed.parts[ptr] = part
     }
   }
   parsed.parts.length = ptr + 1

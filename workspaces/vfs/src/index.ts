@@ -30,7 +30,7 @@ export class VFSError extends ErrorWithCause<Error> {
   }
 }
 
-export interface VFSReadStream<B extends Uint8Array = Uint8Array> extends ReadableStream<B> {}
+export interface VFSReadStream extends ReadableStream<Uint8Array> {}
 
 export interface VFSWriteStream extends WritableStream<Uint8Array> {}
 
@@ -117,20 +117,15 @@ export interface VFSWatcher {
 
 export type VFSWatchUnsubscribe = () => Promise<void>
 
-export abstract class VFS<
-  B extends Uint8Array = Uint8Array,
-  R extends VFSReadStream<B> = VFSReadStream<B>,
-  W extends VFSWriteStream = VFSWriteStream,
-  H extends VFSFileHandle = VFSFileHandle
-> {
+export abstract class VFS {
   // functions that don't go through final link:
   // _symlink, _readSymlink, _rename, _removeFile, _lstat
   protected abstract _readDir (dir: string[]): Promise<string[]>
   protected abstract _readDirent (dir: string[]): Promise<VFSDirent[]>
   // always makes dir through symlinks
   protected abstract _mkdir (dir: string[], recursive: boolean): Promise<void>
-  protected abstract _readFile (file: string[], signal?: AbortSignal): Promise<B>
-  protected abstract _readFileStream (file: string[], signal?: AbortSignal): R
+  protected abstract _readFile (file: string[], signal?: AbortSignal): Promise<Uint8Array>
+  protected abstract _readFileStream (file: string[], signal?: AbortSignal): VFSReadStream
   protected abstract _removeDir (
     dir: string[],
     recursive: boolean,
@@ -146,13 +141,13 @@ export abstract class VFS<
     data: Uint8Array,
     signal?: AbortSignal
   ): Promise<void>
-  protected abstract _appendFileStream (file: string[], signal?: AbortSignal): W
+  protected abstract _appendFileStream (file: string[], signal?: AbortSignal): VFSWriteStream
   protected abstract _writeFile (
     file: string[],
     data: Uint8Array,
     signal?: AbortSignal
   ): Promise<void>
-  protected abstract _writeFileStream (file: string[], signal?: AbortSignal): W
+  protected abstract _writeFileStream (file: string[], signal?: AbortSignal): VFSWriteStream
   protected abstract _truncate (file: string[], to: number): Promise<void>
   // copyDir and copyFile always copy through symlinks
   protected abstract _copyDir (src: string[], dst: string[], signal?: AbortSignal): Promise<void>
@@ -162,7 +157,7 @@ export abstract class VFS<
     read: boolean,
     write: boolean,
     truncate: boolean
-  ): Promise<H>
+  ): Promise<VFSFileHandle>
   protected abstract _stat (file: string[]): Promise<VFSStats>
   protected abstract _lstat (file: string[]): Promise<VFSStats>
   protected abstract _exists (file: string[]): Promise<boolean>
