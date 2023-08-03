@@ -431,7 +431,9 @@ export class MemVFS extends VFS {
       if (create && (create & FindContextCreateMode.Recurse || !path.length)) {
         this._root = create & FindContextCreateMode.Dir
           ? { type: FileNodeType.Dir, children: new Map() }
-          : { type: FileNodeType.File, content: null }
+            : create & FindContextCreateMode.File
+              ? { type: FileNodeType.File, content: null }
+              : { type: FileNodeType.Symlink, to: [], relative: false }
       } else {
         throw new VFSError('no such file or directory', { code: 'ENOENT' })
       }
@@ -735,7 +737,7 @@ export class MemVFS extends VFS {
         this._writeRaw(node, chunk, offset)
         offset += chunk.byteLength
       }
-    })
+    }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
   }
 
   private _readRawStream (node: FileNode, signal?: AbortSignal) {
@@ -1162,7 +1164,7 @@ export class MemVFS extends VFS {
       const result = this._entry(
         dir,
         true,
-        FindContextCreateMode.Dir & FindContextCreateMode.Recurse
+        FindContextCreateMode.Dir | FindContextCreateMode.Recurse
       )
       if (result.mount) {
         return result.vfs['_mkdir'](result.path, true)

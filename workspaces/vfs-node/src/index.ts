@@ -124,13 +124,21 @@ const createReadStream = (
       if (byob) {
         const readLen = Math.min(byob.view.byteLength, ctrl.desiredSize!)
         const result = await handle.read(byob.view, 0, readLen)
-        byob.respond(result.bytesRead)
-        if (!result.bytesRead) await handle.close()
+        if (result.bytesRead) {
+          byob.respond(result.bytesRead)
+        } else {
+          ctrl.close()
+          await handle.close()
+        }
       } else {
         const buf = Buffer.allocUnsafeSlow(ctrl.desiredSize!)
         const result = await handle.read(buf, 0, ctrl.desiredSize!)
-        ctrl.enqueue(buf.subarray(0, result.bytesRead))
-        if (!result.bytesRead) await handle.close()
+        if (result.bytesRead) {
+          ctrl.enqueue(buf.subarray(0, result.bytesRead))
+        } else {
+          ctrl.close()
+          await handle.close()
+        }
       }
     },
     async cancel () {
@@ -139,7 +147,7 @@ const createReadStream = (
     },
     autoAllocateChunkSize: 65536,
     type: 'bytes'
-  }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
+  }, { highWaterMark: 65536 })
 }
 
 const createWriteStream = (
@@ -193,7 +201,7 @@ const createWriteStream = (
       dead = true
       await handle.close()
     }
-  })
+  }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
 }
 
 class NodeVFSFileHandle extends VFSFileHandle {
@@ -293,22 +301,24 @@ export class NodeVFS extends VFS {
       }
 
       const child = p + path.sep + src[i]
+      const childTarget = src[i] && src[i] !== '.' ? child : p
       try {
         const linkPath = await fs.promises.readlink(child)
         if (++depth > 40) {
           throw new VFSError('too many symlinks', { code: 'EINVAL' })
         }
         if (!thruLast && i === src.length - 1) {
-          p = child
+          p = childTarget
           break
         }
         if (path.isAbsolute(linkPath)) {
           const parsed = path.parse(linkPath)
-          const newSrc = parsed.dir.split(path.sep)
+          const newSrc = parsed.dir.slice(parsed.root.length).split(path.sep)
           newSrc.push(parsed.base)
           for (++i; i < src.length; ++i) newSrc.push(src[i])
           strict = false
           p = parsed.root
+          if (p.endsWith(path.sep)) p = p.slice(0, -1)
           src = newSrc
         } else {
           const newSrc = linkPath.split(path.sep)
@@ -318,9 +328,12 @@ export class NodeVFS extends VFS {
         }
         i = -1
       } catch (err) {
-        p = child
+        p = childTarget
         if (err instanceof VFSError) throw err
-        if ((err as { code?: unknown } | undefined)?.code === 'EINVAL') {
+        if (
+          (err as { code?: unknown } | undefined)?.code === 'EINVAL' ||
+          ((err as { code?: unknown } | undefined)?.code === 'ENOTDIR' && child !== childTarget)
+        ) {
           continue
         }
         if ((err as { code?: unknown } | undefined)?.code === 'ENOENT') {
