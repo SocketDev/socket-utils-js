@@ -104,9 +104,10 @@ const createReadStream = (
   throwIfAborted(signal)
   return new NodeReadableStream({
     async start (ctrl) {
+      let handle: FileHandle | undefined
       try {
         const filePath = await getPath()
-        const handle = await withVFSErr(
+        handle = await withVFSErr(
           fs.promises.open(filePath, fs.promises.constants.O_RDONLY)
         )
         throwIfAborted(signal)
@@ -116,6 +117,7 @@ const createReadStream = (
         resolveFileHandle(handle)
       } catch (err) {
         ctrl.error(err)
+        handle?.close().catch(() => {})
       }
     },
     async pull (ctrl) {
@@ -123,27 +125,33 @@ const createReadStream = (
       const byob = ctrl.byobRequest as unknown as PatchedBYOBRequest | null | undefined
       if (byob) {
         const readLen = Math.min(byob.view.byteLength, ctrl.desiredSize!)
-        const result = await handle.read(byob.view, 0, readLen)
+        const result = await handle.read(byob.view, 0, readLen).catch(err => {
+          handle.close().catch(() => {})
+          throw wrapVFSErr(err)
+        })
         if (result.bytesRead) {
           byob.respond(result.bytesRead)
         } else {
           ctrl.close()
-          await handle.close()
+          await withVFSErr(handle.close())
         }
       } else {
         const buf = Buffer.allocUnsafeSlow(ctrl.desiredSize!)
-        const result = await handle.read(buf, 0, ctrl.desiredSize!)
+        const result = await handle.read(buf, 0, ctrl.desiredSize!).catch(err => {
+          handle.close().catch(() => {})
+          throw wrapVFSErr(err)
+        })
         if (result.bytesRead) {
           ctrl.enqueue(buf.subarray(0, result.bytesRead))
         } else {
           ctrl.close()
-          await handle.close()
+          await withVFSErr(handle.close())
         }
       }
     },
     async cancel () {
       const handle = await handlePromise
-      await handle.close()
+      await withVFSErr(handle.close())
     },
     autoAllocateChunkSize: 65536,
     type: 'bytes'
@@ -163,6 +171,7 @@ const createWriteStream = (
   throwIfAborted(signal)
   return new NodeWritableStream<Uint8Array>({
     async start (ctrl) {
+      let handle: FileHandle | undefined
       try {
         const filePath = await getPath()
         let flag = fs.promises.constants.O_CREAT | fs.promises.constants.O_WRONLY
@@ -171,7 +180,7 @@ const createWriteStream = (
         } else {
           flag |= fs.promises.constants.O_TRUNC
         }
-        const handle = await withVFSErr(fs.promises.open(filePath, flag))
+        handle = await withVFSErr(fs.promises.open(filePath, flag))
         throwIfAborted(signal)
         signal?.addEventListener('abort', () => {
           dead = true
@@ -180,6 +189,7 @@ const createWriteStream = (
         resolveFileHandle(handle)
       } catch (err) {
         ctrl.error(err)
+        handle?.close().catch(() => {})
       }
     },
     async write (chunk) {
@@ -187,19 +197,22 @@ const createWriteStream = (
       let offset = 0
       while (offset < chunk.length) {
         if (dead) break
-        const result = await handle.write(chunk, offset)
+        const result = await handle.write(chunk, offset).catch(err => {
+          handle.close().catch(() => {})
+          throw err
+        })
         offset += result.bytesWritten
       }
     },
     async close () {
       const handle = await handlePromise
       dead = true
-      await handle.close()
+      await withVFSErr(handle.close())
     },
     async abort () {
       const handle = await handlePromise
       dead = true
-      await handle.close()
+      await withVFSErr(handle.close())
     }
   }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
 }

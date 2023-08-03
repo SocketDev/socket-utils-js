@@ -26,6 +26,7 @@ type BufferPoolRef = {
 
 type RawRef = {
   src: FileBackingType.Raw
+  // protect against accidentally assigning Uint8Array
   buf: ArrayBuffer & { buffer?: undefined }
   len: number
 }
@@ -134,13 +135,13 @@ type FSFilePool = {
 // mutates entry.start
 const allocPool = (pool: FSFilePool, entry: BufferPoolRef, growthFactor: number) => {
   pool.allocated.add(entry)
+  if (pool.free.length) {
+    entry.start = pool.free.pop()!
+    return entry
+  }
   if (pool.ind < pool.buf.byteLength) {
     entry.start = pool.ind
     pool.ind += pool.block
-    return entry
-  }
-  if (pool.free.length) {
-    entry.start = pool.free.pop()!
     return entry
   }
   const newCount = Math.floor(pool.buf.byteLength / pool.block * growthFactor) + 1
@@ -264,15 +265,16 @@ export interface MemVFSOptions {
   poolShrinkPadding?: number
   // growth factor for pools when needed
   poolGrowthFactor?: number
+  // max symlinks to enter before giving up
   maxLinkDepth?: number
 }
 
 // follow unix standards
 const MAX_SYMLINKS = 40
 const FILE_SHRINK_RATIO = 2
-const FILE_SHRINK_PADDING = 0.4
-const POOL_SHRINK_RATIO = 4
-const POOL_SHRINK_PADDING = 1
+const FILE_SHRINK_PADDING = 0.3
+const POOL_SHRINK_RATIO = 3
+const POOL_SHRINK_PADDING = 0.5
 const POOL_GROWTH_FACTOR = 1.5
 const EMPTY_BUF = new Uint8Array(0)
 
@@ -434,6 +436,7 @@ export class MemVFS extends VFS {
             : create & FindContextCreateMode.File
               ? { type: FileNodeType.File, content: null }
               : { type: FileNodeType.Symlink, to: [], relative: false }
+        create |= FindContextCreateMode.DidCreate
       } else {
         throw new VFSError('no such file or directory', { code: 'ENOENT' })
       }
@@ -567,7 +570,7 @@ export class MemVFS extends VFS {
         : node.content.buf.byteLength
       : 0
 
-    if (space < (node.content ? node.content.len : 0) || allocSize >= space) {
+    if (allocSize >= space) {
       return
     }
 
@@ -730,7 +733,7 @@ export class MemVFS extends VFS {
     }
   }
 
-  private _writeRawStream (node: FileNode, offset = 0, signal?: AbortSignal) {
+  private _writeRawStream (node: FileNode | null, offset = 0, signal?: AbortSignal) {
     throwIfAborted(signal)
     return new WritableStream<Uint8Array>({
       start: ctrl => {
@@ -739,15 +742,42 @@ export class MemVFS extends VFS {
         }, { once: true })
       },
       write: chunk => {
-        this._writeRaw(node, chunk, offset)
+        this._writeRaw(node!, chunk, offset)
         offset += chunk.byteLength
+      },
+      close: () => {
+        // release reference for GC
+        node = null
+      },
+      abort: () => {
+        node = null
       }
     }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
   }
 
-  private _readRawStream (node: FileNode, signal?: AbortSignal) {
+  private _readRawStream (node: FileNode | null, signal?: AbortSignal) {
+    const hasBYOB = typeof ReadableByteStreamController !== 'undefined'
     throwIfAborted(signal)
     let bytesRead = 0
+    if (!hasBYOB) {
+      return new ReadableStream<Uint8Array>({
+        start: ctrl => {
+          signal?.addEventListener('abort', err => {
+            ctrl.error(wrapVFSErr(err))
+          }, { once: true })
+        },
+        pull: ctrl => {
+          const readResult = this._readRaw(node!.content)
+          const endSize = Math.min(readResult.byteLength, bytesRead + ctrl.desiredSize!)
+          ctrl.enqueue(readResult.slice(bytesRead, bytesRead = endSize))
+          if (endSize === readResult.byteLength) ctrl.close()
+        },
+        cancel: () => {
+          // release reference for GC
+          node = null
+        }
+      }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
+    }
     // we avoid just returning the entire raw chunk here because it would need to be copied
     // for huge files this doesn't have any memory overhead
     return new ReadableStream({
@@ -757,7 +787,7 @@ export class MemVFS extends VFS {
         }, { once: true })
       },
       pull: ctrl => {
-        const readResult = this._readRaw(node.content)
+        const readResult = this._readRaw(node!.content)
         if (ctrl.byobRequest) {
           const view = ctrl.byobRequest.view!
           const desiredSize = Math.min(ctrl.desiredSize!, view.byteLength)
@@ -777,9 +807,13 @@ export class MemVFS extends VFS {
           if (endSize === readResult.byteLength) ctrl.close()
         }
       },
+      cancel: () => {
+        // release reference for GC
+        node = null
+      },
       autoAllocateChunkSize: 65536,
       type: 'bytes'
-    }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
+    }, { highWaterMark: 65536 })
   }
 
   protected async _truncate (file: string[], to: number) {

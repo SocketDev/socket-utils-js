@@ -214,8 +214,8 @@ export class FSAccessVFS extends VFS {
   }
 
   private async _partialLocate (path: string[], expectAll: boolean) {
+    if (!path.length) return null
     if (this._root.kind !== 'directory') {
-      if (path.every(p => !p || p === '.')) return null
       throw new VFSError('cannot traverse single-file filesystem', { code: 'ENOTDIR' })
     }
     const parents: FileSystemDirectoryHandle[] = []
@@ -229,8 +229,9 @@ export class FSAccessVFS extends VFS {
         continue
       }
       try {
-        curDir = await curDir.getDirectoryHandle(path[i])
+        const newDir = await curDir.getDirectoryHandle(path[i])
         parents.push(curDir)
+        curDir = newDir
       } catch (err) {
         if (err instanceof Error) {
           if (err.name === 'TypeMismatchError') {
@@ -238,24 +239,30 @@ export class FSAccessVFS extends VFS {
           }
           if (err.name === 'NotFoundError' && !expectAll) {
             return {
+              parents,
               last: curDir,
-              rem: i
+              rem: path.slice(i)
             }
           }
         }
         throw wrapVFSErr(err)
       }
     }
-    if (path[path.length - 1] === '..') {
+    const lastPart = path[path.length - 1]
+    const rem = [lastPart]
+    if (!lastPart || lastPart === '.') {
+      if (!parents.length) return null
+      rem[0] = curDir.name
+      curDir = parents.pop()!
+    } else if (lastPart === '..') {
       if (parents.length < 2) return null
-      return {
-        last: parents[parents.length - 2],
-        rem: parents.length - 1
-      }
+      rem[0] = parents.pop()!.name
+      curDir = parents.pop()!
     }
     return {
+      parents,
       last: curDir,
-      rem: path.length - 1
+      rem
     }
   }
 
@@ -263,7 +270,7 @@ export class FSAccessVFS extends VFS {
     const partial = await this._partialLocate(path, true)
     return partial && {
       parent: partial.last,
-      name: path[partial.rem]
+      name: partial.rem[0]
     }
   }
 
@@ -640,13 +647,23 @@ export class FSAccessVFS extends VFS {
       throw new VFSError('cannot create root directory', { code: 'EINVAL' })
     }
     let cur = loc.last
-    for (let i = loc.rem; i < dir.length; ++i) {
+    for (let i = 0; i < loc.rem.length; ++i) {
+      const part = loc.rem[i]
+      if (!part || part === '.') continue
+      if (part === '..') {
+        if (loc.parents.length) {
+          cur = loc.parents.pop()!
+        }
+        continue
+      }
       try {
-        cur = await cur.getDirectoryHandle(dir[i], { create: recursive })
+        const newDir = await cur.getDirectoryHandle(part, { create: recursive })
+        loc.parents.push(cur)
+        cur = newDir
       } catch (err) {
         if (err instanceof Error) {
           if (err.name === 'NotFoundError') {
-            await withVFSErr(cur.getDirectoryHandle(dir[i], { create: true }))
+            await withVFSErr(cur.getDirectoryHandle(part, { create: true }))
             return
           } else if (err.name === 'TypeMismatchError') {
             throw new VFSError('file exists', { code: 'EEXIST' })
