@@ -493,12 +493,17 @@ export class MemVFS extends VFS {
     new Uint8Array(this._pools[poolIndex].buf, ref.start, ref.len).set(
       new Uint8Array(this._pools[ref.pool].buf, oldPos, ref.len)
     )
+    const newPos = ref.start
+    // this helps avoid weirdness when downsizing pools
+    ref.start = oldPos
     freePool(
       this._pools[ref.pool],
       ref,
       this._poolShrinkRatio,
       this._poolShrinkRetainFactor
     )
+    ref.start = newPos
+    ref.pool = poolIndex
   }
 
   private _truncateRaw (node: FileNode, to: number, shrink: boolean) {

@@ -308,7 +308,7 @@ export class NodeVFS extends VFS {
           throw new VFSError('too many symlinks', { code: 'EINVAL' })
         }
         if (!thruLast && i === src.length - 1) {
-          p = childTarget
+          p = child
           break
         }
         if (path.isAbsolute(linkPath)) {
@@ -328,7 +328,7 @@ export class NodeVFS extends VFS {
         }
         i = -1
       } catch (err) {
-        p = childTarget
+        p = i === src.length - 1 ? child : childTarget
         if (err instanceof VFSError) throw err
         if (
           (err as { code?: unknown } | undefined)?.code === 'EINVAL' ||

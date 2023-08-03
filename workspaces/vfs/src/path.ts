@@ -9,7 +9,14 @@ const parseParts = (paths: string[]): ParsedPath => {
 
   for (let i = 0; i < paths.length; ++i) {
     const pathParts = paths[i].split('/')
-    for (let j = i === 0 && absolute ? 1 : 0; j < pathParts.length; ++j) {
+    let j = i === 0 && absolute ? 1 : 0
+    if (
+      pathParts.length === j + 1 && (
+      !pathParts[j] || (!j && pathParts[j] === '.')
+    )) {
+      continue
+    }
+    for (; j < pathParts.length; ++j) {
       parts.push(pathParts[j])
     }
   }

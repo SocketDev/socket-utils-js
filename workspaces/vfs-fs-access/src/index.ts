@@ -214,8 +214,8 @@ export class FSAccessVFS extends VFS {
   }
 
   private async _partialLocate (path: string[], expectAll: boolean) {
-    if (!path.length) return null
     if (this._root.kind !== 'directory') {
+      if (path.every(p => !p || p === '.')) return null
       throw new VFSError('cannot traverse single-file filesystem', { code: 'ENOTDIR' })
     }
     const parents: FileSystemDirectoryHandle[] = []
