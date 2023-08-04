@@ -218,8 +218,9 @@ class MemVFSFileHandle extends VFSFileHandle {
 
   protected async _read (into: Uint8Array, position: number) {
     const value = this._fs!['_readRaw'](this._node!.content)
-    into.set(value.subarray(position, position + into.byteLength))
-    return into.byteLength
+    const result = value.subarray(position, position + into.byteLength)
+    into.set(result)
+    return result.byteLength
   }
 
   protected async _stat (): Promise<VFSStats> {

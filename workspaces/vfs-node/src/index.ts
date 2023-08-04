@@ -44,6 +44,7 @@ const allowedErrorTypes = new Set([
   'EBADF',
   'EINVAL',
   'EEXIST',
+  'EBUSY',
   'EUNKNOWN'
 ])
 
@@ -167,7 +168,6 @@ const createWriteStream = (
   const handlePromise: Promise<FileHandle> = new Promise(resolve => {
     resolveFileHandle = resolve
   })
-  let dead = false
   throwIfAborted(signal)
   return new NodeWritableStream<Uint8Array>({
     async start (ctrl) {
@@ -183,7 +183,6 @@ const createWriteStream = (
         handle = await withVFSErr(fs.promises.open(filePath, flag))
         throwIfAborted(signal)
         signal?.addEventListener('abort', () => {
-          dead = true
           ctrl.error(wrapVFSErr(signal.reason))
         }, { once: true })
         resolveFileHandle(handle)
@@ -192,11 +191,13 @@ const createWriteStream = (
         handle?.close().catch(() => {})
       }
     },
-    async write (chunk) {
+    async write (chunk, ctrl) {
       const handle = await handlePromise
       let offset = 0
       while (offset < chunk.length) {
-        if (dead) break
+        if ((ctrl as { signal?: AbortSignal }).signal?.aborted) {
+          break
+        }
         const result = await handle.write(chunk, offset).catch(err => {
           handle.close().catch(() => {})
           throw err
@@ -206,12 +207,10 @@ const createWriteStream = (
     },
     async close () {
       const handle = await handlePromise
-      dead = true
       await withVFSErr(handle.close())
     },
     async abort () {
       const handle = await handlePromise
-      dead = true
       await withVFSErr(handle.close())
     }
   }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
@@ -314,6 +313,9 @@ export class NodeVFS extends VFS {
       }
 
       const child = p + path.sep + src[i]
+      if (src[i].includes(path.sep)) {
+        throw new VFSError('no such file or directory (invalid path part)', { code: 'ENOENT' })
+      }
       const childTarget = src[i] && src[i] !== '.' ? child : p
       try {
         const linkPath = await fs.promises.readlink(child)

@@ -14,6 +14,7 @@ export type VFSErrorCode =
   | 'EBADF'
   | 'EINVAL'
   | 'EEXIST'
+  | 'EBUSY'
   | 'EUNKNOWN'
 
 export class VFSError extends ErrorWithCause<Error> {

@@ -1,11 +1,10 @@
 {
-  "name": "@socketsecurity/vfs",
+  "name": "@socketsecurity/vfs-vscode",
   "version": "0.1.0",
   "license": "MIT",
-  "description": "Extensible virtual filesystem with streams, random access, and watchers",
+  "description": "Implementation of @socketsecurity/vfs for VSCode's workspace filesystem",
   "main": "./lib/index.js",
   "module": "./esm/index.js",
-  "types": "./lib/index.d.ts",
   "exports": {
     ".": {
       "import": {
@@ -23,16 +22,21 @@
     "email": "eng@socket.dev",
     "url": "https://socket.dev"
   },
-  "homepage": "https://github.com/SocketDev/socket-utils-js/tree/main/workspaces/vfs",
+  "homepage": "https://github.com/SocketDev/socket-utils-js/tree/main/workspaces/vfs-vscode",
   "repository": {
     "type": "git",
     "url": "https://github.com/SocketDev/socket-utils-js"
   },
+  "engines": {
+    "node": ">=16.5.0",
+    "vscode": ">=1.66.0"
+  },
   "scripts": {
     "build": "tsc -b && tsc -b tsconfig.esm.json"
   },
-
   "dependencies": {
-    "pony-cause": "^2.1.10"
+    "@socketsecurity/vfs": "^0.1.0",
+    "@types/node": ">=16.5.0",
+    "@types/vscode": ">=1.66.0"
   }
 }

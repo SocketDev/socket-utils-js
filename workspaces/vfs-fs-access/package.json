@@ -1,6 +1,6 @@
 {
   "name": "@socketsecurity/vfs-fs-access",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "license": "MIT",
   "description": "File System Access API implemented with @socketsecurity/vfs",
   "main": "./lib/index.js",
@@ -22,16 +22,16 @@
     "email": "eng@socket.dev",
     "url": "https://socket.dev"
   },
-  "homepage": "https://github.com/SocketDev/socket-utils-js",
+  "homepage": "https://github.com/SocketDev/socket-utils-js/tree/main/workspaces/vfs-fs-access",
   "repository": {
     "type": "git",
-    "url": "git://github.com/SocketDev/socket-utils-js.git"
+    "url": "https://github.com/SocketDev/socket-utils-js"
   },
   "scripts": {
     "build": "tsc -b && tsc -b tsconfig.esm.json"
   },
   "dependencies": {
-    "@socketsecurity/vfs": "^1.0.0",
+    "@socketsecurity/vfs": "^0.1.0",
     "@types/wicg-file-system-access": ">=2020.9.6"
   }
 }

@@ -1,7 +1,9 @@
 /// <reference types="wicg-file-system-access" />
 import { VFS, VFSError, VFSFileHandle, path } from '@socketsecurity/vfs'
 
-import type { VFSDirent, VFSWatchCallback, VFSWatchErrorCallback } from '@socketsecurity/vfs'
+import type {
+  VFSDirent, VFSWatchCallback, VFSWatchErrorCallback, VFSStats
+} from '@socketsecurity/vfs'
 
 interface MovableHandle extends FileSystemHandle {
   move (parent: FileSystemDirectoryHandle, name: string): Promise<void>
@@ -148,13 +150,13 @@ class FSAccessVFSFileHandle extends VFSFileHandle {
   protected async _read (into: Uint8Array, position: number) {
     const buf = await withVFSErr(this._file.slice(position, position + into.length).arrayBuffer())
     into.set(new Uint8Array(buf))
-    return into.byteLength
+    return buf.byteLength
   }
 
-  protected async _stat () {
+  protected async _stat (): Promise<VFSStats> {
     this._file = await withVFSErr(this._handle.getFile())
     return {
-      type: 'file' as const,
+      type: 'file',
       size: this._file.size
     }
   }
@@ -182,6 +184,8 @@ class FSAccessVFSFileHandle extends VFSFileHandle {
       data,
       position
     }))
+    // refresh file
+    await this._stat()
     return data.byteLength
   }
 
