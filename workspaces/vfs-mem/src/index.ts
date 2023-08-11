@@ -1286,7 +1286,9 @@ export class MemVFS extends VFS {
       let symResult = await result.vfs['_readSymlink'](result.path)
       // try to patch absolute paths
       if (symResult.startsWith('/') && result.ctx.path.length) {
-        symResult = '/' + result.ctx.path.slice(0, result.ctx.i).join('/') + symResult
+        symResult = vfsPath.normalize(
+          '/' + result.ctx.path.slice(0, result.ctx.i).join('/')
+        ) + symResult
       }
       return symResult
     }
@@ -1305,11 +1307,13 @@ export class MemVFS extends VFS {
       let realResult = await result.vfs['_realPath'](result.path)
       // try to patch absolute paths
       if (result.ctx.path.length) {
-        realResult = '/' + result.ctx.path.slice(0, result.ctx.i).join('/') + realResult
+        realResult = vfsPath.normalize(
+          '/' + result.ctx.path.slice(0, result.ctx.i).join('/')
+        ) + realResult
       }
       return realResult
     }
-    return '/' + result.ctx.path.join('/')
+    return vfsPath.normalize('/' + result.ctx.path.join('/'))
   }
 
   private _cleanup (node: FSNode) {
@@ -1560,7 +1564,7 @@ export class MemVFS extends VFS {
     const result = this._entry(link, false, FindContextCreateMode.Symlink)
     if (result.mount) {
       // TODO: maybe we should error on absolute symlinks here, as they're resolved wrong
-      return result.vfs['_symlink'](target, link, relative)
+      return result.vfs['_symlink'](target, result.path, relative)
     }
     if (
       result.node.type !== FileNodeType.Symlink ||
@@ -1584,7 +1588,7 @@ export class MemVFS extends VFS {
   protected async _writeFile (file: string[], data: Uint8Array, signal?: AbortSignal) {
     const result = this._file(file, true)
     if (result.mount) {
-      return result.vfs['_writeFile'](file, data, signal)
+      return result.vfs['_writeFile'](result.path, data, signal)
     }
     this._truncateRaw(result.node, 0, false)
     this._writeRaw(result.node, data, 0)
@@ -1593,7 +1597,7 @@ export class MemVFS extends VFS {
   protected _writeFileStream (file: string[], signal?: AbortSignal): VFSWriteStream {
     const result = this._file(file, true)
     if (result.mount) {
-      return result.vfs['_writeFileStream'](file, signal)
+      return result.vfs['_writeFileStream'](result.path, signal)
     }
     this._truncateRaw(result.node, 0, false)
     return this._writeRawStream(result.node, 0, signal)
