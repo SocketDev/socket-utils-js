@@ -31,7 +31,6 @@
   "scripts": {
     "build": "tsc -b && tsc -b tsconfig.esm.json"
   },
-
   "dependencies": {
     "pony-cause": "^2.1.10"
   }
