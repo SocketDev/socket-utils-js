@@ -29,7 +29,8 @@
     "url": "https://github.com/SocketDev/socket-utils-js"
   },
   "scripts": {
-    "build": "tsc -b && tsc -b tsconfig.esm.json"
+    "build": "tsc -b && tsc -b tsconfig.esm.json",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "pony-cause": "^2.1.10"

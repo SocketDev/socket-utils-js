@@ -15,7 +15,7 @@
   "homepage": "https://github.com/SocketDev/socket-utils-js",
   "repository": {
     "type": "git",
-    "url": "git://github.com/SocketDev/socket-utils-js.git"
+    "url": "https://github.com/SocketDev/socket-utils-js"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -31,7 +31,8 @@
     "node": ">=16.5.0"
   },
   "scripts": {
-    "build": "tsc -b && tsc -b tsconfig.esm.json"
+    "build": "tsc -b && tsc -b tsconfig.esm.json",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@parcel/watcher": "^2.2.0",
