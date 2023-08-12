@@ -5,9 +5,13 @@
     "rootDir": "src",
     "outDir": "lib"
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "exclude": [],
-  "references": [{
-    "path": "../vfs"
-  }]
+  "references": [
+    {
+      "path": "../vfs"
+    }
+  ]
 }

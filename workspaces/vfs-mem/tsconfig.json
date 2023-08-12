@@ -2,13 +2,20 @@
   "extends": "../../shared/tsconfig.base.json",
   "compilerOptions": {
     "tsBuildInfoFile": "../../shared/tsbuildinfo/vfs-mem",
-    "lib": ["ESNext", "DOM"],
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "rootDir": "src",
-    "outDir": "lib",
+    "outDir": "lib"
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "exclude": [],
-  "references": [{
-    "path": "../vfs"
-  }]
+  "references": [
+    {
+      "path": "../vfs"
+    }
+  ]
 }
