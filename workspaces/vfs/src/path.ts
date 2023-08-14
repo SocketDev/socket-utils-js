@@ -81,8 +81,13 @@ export function relative (from: string, to: string) {
 }
 
 export function dirname (path: string) {
-  const resolved = normalize(path)
-  const lastSlash = resolved.lastIndexOf('/')
-  if (lastSlash === -1) return '.'
-  return resolved.slice(0, lastSlash)
+  const parsed = parse(path)
+  let i = parsed.parts.length - 1
+  for (; i >= 0 && !parsed.parts[i]; --i);
+  --i
+  for (; i >= 0 && !parsed.parts[i]; --i);
+  if (++i > 0) {
+    return (parsed.absolute ? '/' : '') + parsed.parts.slice(0, i).join('/')
+  }
+  return parsed.absolute ? '/' : '.'
 }
