@@ -254,6 +254,8 @@ const entryTypes: VFSEntryType[] = ['file', 'dir', 'symlink']
 
 const getEntryType = (fileType: FileNodeType) => entryTypes[fileType]
 
+const DUMMY_FILE_NODE: FileNode = { type: FileNodeType.File, content: null }
+
 export interface MemVFSOptions {
   pools?: MemVFSPoolSpec[]
   // ratio of file size to allocated size before it can shrink
@@ -516,54 +518,53 @@ export class MemVFS extends VFS {
   }
 
   private _truncateRaw (node: FileNode, to: number, shrink: boolean) {
-    if (!node.content || to >= node.content.len) return
+    if (!node.content || to > node.content.len) return
     node.content.len = to
-    if (shrink) {
-      if (to === 0) {
-        if (node.content.src === FileBackingType.Pool) {
-          freePool(
-            this._pools[node.content.pool],
-            node.content,
-            this._poolShrinkRatio,
-            this._poolShrinkRetainFactor
-          )
-        }
-        node.content = null
-        return
-      }
-      let poolIndex = this._pools.length - 1
-      // find smallest pool that fits
-      while (poolIndex >= 0 && this._pools[poolIndex].block >= this._shrinkRetainFactor * to) {
-        --poolIndex
-      }
-      poolIndex += 1
+    if (!shrink) return
+    if (to === 0) {
       if (node.content.src === FileBackingType.Pool) {
-        if (
-          to * this._shrinkRatio < this._pools[node.content.pool].block &&
-          poolIndex !== node.content.pool
-        ) {
-          this._poolRealloc(node.content, poolIndex)
-        }
-      } else if (node.content.src === FileBackingType.Raw) {
-        if (to * this._shrinkRatio < node.content.buf.byteLength) {
-          if (poolIndex < this._pools.length) {
-            const entry: BufferPoolRef = {
-              src: FileBackingType.Pool,
-              pool: poolIndex,
-              start: 0,
-              len: to
-            }
-            allocPool(
-              this._pools[poolIndex],
-              entry,
-              this._poolGrowthFactor
-            )
-            node.content = entry
-          } else {
-            const buffer = new Uint8Array(Math.ceil(this._shrinkRetainFactor * to))
-            buffer.set(new Uint8Array(node.content.buf, 0, to))
-            node.content.buf = buffer.buffer
+        freePool(
+          this._pools[node.content.pool],
+          node.content,
+          this._poolShrinkRatio,
+          this._poolShrinkRetainFactor
+        )
+      }
+      node.content = null
+      return
+    }
+    let poolIndex = this._pools.length - 1
+    // find smallest pool that fits
+    while (poolIndex >= 0 && this._pools[poolIndex].block >= this._shrinkRetainFactor * to) {
+      --poolIndex
+    }
+    poolIndex += 1
+    if (node.content.src === FileBackingType.Pool) {
+      if (
+        to * this._shrinkRatio < this._pools[node.content.pool].block &&
+        poolIndex !== node.content.pool
+      ) {
+        this._poolRealloc(node.content, poolIndex)
+      }
+    } else if (node.content.src === FileBackingType.Raw) {
+      if (to * this._shrinkRatio < node.content.buf.byteLength) {
+        if (poolIndex < this._pools.length) {
+          const entry: BufferPoolRef = {
+            src: FileBackingType.Pool,
+            pool: poolIndex,
+            start: 0,
+            len: to
           }
+          allocPool(
+            this._pools[poolIndex],
+            entry,
+            this._poolGrowthFactor
+          )
+          node.content = entry
+        } else {
+          const buffer = new Uint8Array(Math.ceil(this._shrinkRetainFactor * to))
+          buffer.set(new Uint8Array(node.content.buf, 0, to))
+          node.content.buf = buffer.buffer
         }
       }
     }
@@ -739,8 +740,10 @@ export class MemVFS extends VFS {
     }
   }
 
-  private _writeRawStream (node: FileNode | null, offset = 0, signal?: AbortSignal) {
+  private _writeRawStream (node: FileNode, append: boolean, signal?: AbortSignal) {
     throwIfAborted(signal)
+    let offset = append && node.content ? node.content.len : 0
+    this._truncateRaw(node, offset, false)
     return new WritableStream<Uint8Array>({
       start: ctrl => {
         signal?.addEventListener('abort', err => {
@@ -748,20 +751,26 @@ export class MemVFS extends VFS {
         }, { once: true })
       },
       write: chunk => {
-        this._writeRaw(node!, chunk, offset)
+        this._writeRaw(node, chunk, offset)
         offset += chunk.byteLength
       },
       close: () => {
+        if (node.content) {
+          this._truncateRaw(node, offset, true)
+        }
         // release reference for GC
-        node = null
+        node = DUMMY_FILE_NODE
       },
       abort: () => {
-        node = null
+        if (node.content) {
+          this._truncateRaw(node, offset, true)
+        }
+        node = DUMMY_FILE_NODE
       }
     }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
   }
 
-  private _readRawStream (node: FileNode | null, signal?: AbortSignal) {
+  private _readRawStream (node: FileNode, signal?: AbortSignal) {
     const hasBYOB = typeof ReadableByteStreamController !== 'undefined'
     throwIfAborted(signal)
     let bytesRead = 0
@@ -773,14 +782,14 @@ export class MemVFS extends VFS {
           }, { once: true })
         },
         pull: ctrl => {
-          const readResult = this._readRaw(node!.content)
+          const readResult = this._readRaw(node.content)
           const endSize = Math.min(readResult.byteLength, bytesRead + ctrl.desiredSize!)
           if (bytesRead < endSize) ctrl.enqueue(readResult.slice(bytesRead, bytesRead = endSize))
           if (endSize === readResult.byteLength) ctrl.close()
         },
         cancel: () => {
           // release reference for GC
-          node = null
+          node = DUMMY_FILE_NODE
         }
       }, new ByteLengthQueuingStrategy({ highWaterMark: 65536 }))
     }
@@ -809,7 +818,7 @@ export class MemVFS extends VFS {
       },
       cancel: () => {
         // release reference for GC
-        node = null
+        node = DUMMY_FILE_NODE
       },
       autoAllocateChunkSize: 65536,
       type: 'bytes'
@@ -838,8 +847,7 @@ export class MemVFS extends VFS {
     if (result.mount) {
       return result.vfs['_appendFileStream'](result.path, signal)
     }
-    const len = result.node.content ? result.node.content.len : 0
-    return this._writeRawStream(result.node, len, signal)
+    return this._writeRawStream(result.node, true, signal)
   }
 
   private async _copyFileFromMount (
@@ -857,7 +865,7 @@ export class MemVFS extends VFS {
     const readStream = vfs['_readFileStream'](path)
     try {
       await withVFSErr(
-        readStream.pipeTo(this._writeRawStream(into), { signal })
+        readStream.pipeTo(this._writeRawStream(into, false), { signal })
       )
     } finally {
       cancelReserve = true
@@ -1591,6 +1599,9 @@ export class MemVFS extends VFS {
     }
     this._truncateRaw(result.node, 0, false)
     this._writeRaw(result.node, data, 0)
+    if (result.node.content) {
+      this._truncateRaw(result.node, result.node.content.len, true)
+    }
   }
 
   protected _writeFileStream (file: string[], signal?: AbortSignal): VFSWriteStream {
@@ -1599,7 +1610,7 @@ export class MemVFS extends VFS {
       return result.vfs['_writeFileStream'](result.path, signal)
     }
     this._truncateRaw(result.node, 0, false)
-    return this._writeRawStream(result.node, 0, signal)
+    return this._writeRawStream(result.node, false, signal)
   }
 
   protected async _mount (at: string[], fs: VFS, mountPath: string[]) {
