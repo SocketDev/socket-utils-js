@@ -123,31 +123,17 @@ const createReadStream = (
     },
     async pull (ctrl) {
       const handle = await handlePromise
-      const byob = ctrl.byobRequest as unknown as PatchedBYOBRequest | null | undefined
-      if (byob) {
-        const readLen = Math.min(byob.view.byteLength, ctrl.desiredSize!)
-        const result = await handle.read(byob.view, 0, readLen).catch(err => {
-          handle.close().catch(() => {})
-          throw wrapVFSErr(err)
-        })
-        if (result.bytesRead) {
-          byob.respond(result.bytesRead)
-        } else {
-          ctrl.close()
-          await withVFSErr(handle.close())
-        }
+      const byob = ctrl.byobRequest as unknown as PatchedBYOBRequest
+      const readLen = Math.min(byob.view.byteLength, ctrl.desiredSize!)
+      const result = await handle.read(byob.view, 0, readLen).catch(err => {
+        handle.close().catch(() => {})
+        throw wrapVFSErr(err)
+      })
+      if (result.bytesRead) {
+        byob.respond(result.bytesRead)
       } else {
-        const buf = Buffer.allocUnsafeSlow(ctrl.desiredSize!)
-        const result = await handle.read(buf, 0, ctrl.desiredSize!).catch(err => {
-          handle.close().catch(() => {})
-          throw wrapVFSErr(err)
-        })
-        if (result.bytesRead) {
-          ctrl.enqueue(buf.subarray(0, result.bytesRead))
-        } else {
-          ctrl.close()
-          await withVFSErr(handle.close())
-        }
+        ctrl.close()
+        await withVFSErr(handle.close())
       }
     },
     async cancel () {

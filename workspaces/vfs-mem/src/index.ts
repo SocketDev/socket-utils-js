@@ -775,7 +775,7 @@ export class MemVFS extends VFS {
         pull: ctrl => {
           const readResult = this._readRaw(node!.content)
           const endSize = Math.min(readResult.byteLength, bytesRead + ctrl.desiredSize!)
-          ctrl.enqueue(readResult.slice(bytesRead, bytesRead = endSize))
+          if (bytesRead < endSize) ctrl.enqueue(readResult.slice(bytesRead, bytesRead = endSize))
           if (endSize === readResult.byteLength) ctrl.close()
         },
         cancel: () => {
@@ -794,23 +794,17 @@ export class MemVFS extends VFS {
       },
       pull: ctrl => {
         const readResult = this._readRaw(node!.content)
-        if (ctrl.byobRequest) {
-          const view = ctrl.byobRequest.view!
-          const desiredSize = Math.min(ctrl.desiredSize!, view.byteLength)
-          const writeInto = new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
-          if (desiredSize + bytesRead >= readResult.byteLength) {
-            writeInto.set(readResult.subarray(bytesRead))
-            ctrl.byobRequest.respond(readResult.byteLength - bytesRead)
-            ctrl.close()
-            bytesRead = readResult.byteLength
-          } else {
-            writeInto.set(readResult.subarray(bytesRead, bytesRead += desiredSize))
-            ctrl.byobRequest.respond(desiredSize)
-          }
+        const view = ctrl.byobRequest!.view!
+        const desiredSize = Math.min(ctrl.desiredSize!, view.byteLength)
+        const writeInto = new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+        if (desiredSize + bytesRead >= readResult.byteLength) {
+          writeInto.set(readResult.subarray(bytesRead))
+          ctrl.byobRequest!.respond(readResult.byteLength - bytesRead)
+          ctrl.close()
+          bytesRead = readResult.byteLength
         } else {
-          const endSize = Math.min(readResult.byteLength, bytesRead + ctrl.desiredSize!)
-          ctrl.enqueue(readResult.slice(bytesRead, bytesRead = endSize))
-          if (endSize === readResult.byteLength) ctrl.close()
+          writeInto.set(readResult.subarray(bytesRead, bytesRead += desiredSize))
+          ctrl.byobRequest!.respond(desiredSize)
         }
       },
       cancel: () => {

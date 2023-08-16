@@ -16,6 +16,7 @@ Still, trailing slashes are needed when the operation could be valid on a symlin
 ### Readable byte streams
 Streams returned from `readFileStream` must be implemented with an underlying byte source such that `stream.getReader({ type: 'byob' })` does not throw an error. They do not necessarily need to honor BYOB requests and can instead normally call `controller.enqueue(chunk)`, but should read into the user-provided buffer whenever possible.
 
+The only exception to this rule is when `readFileStream` is called in an environment that does not support readable byte streams (e.g. Safari), in which case the stream must dynamically detect that `typeof ReadableByteStreamController === 'undefined'` and only then return a standard readable stream instead. This behavior allows the callee to use a BYOB stream whenever the host environment allows it.
 
 ### Properly implemented protected methods
 All implementers must implement the underscore-prefixed methods properly. The fact that these methods are marked as `protected` is not a guarantee that they will not be called by external code - you are expected to implement them correctly rather than overriding the wrapper methods in the `VFS` parent class directly.

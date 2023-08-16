@@ -75,6 +75,7 @@ const wrapReadStream = (
   gen: () => Promise<ReadableStream<Uint8Array>>,
   signal?: AbortSignal
 ): ReadableStream<Uint8Array> => {
+  const hasBYOB = typeof ReadableByteStreamController !== 'undefined'
   let resolveReader!: (writer: ReadableStreamDefaultReader<Uint8Array>) => void
   const readerPromise = new Promise<ReadableStreamDefaultReader<Uint8Array>>(resolve => {
     resolveReader = resolve
@@ -110,7 +111,8 @@ const wrapReadStream = (
     },
     async cancel (reason) {
       await withVFSErr((await readerPromise).cancel(reason))
-    }
+    },
+    type: hasBYOB ? 'bytes' : undefined
   })
 }
 

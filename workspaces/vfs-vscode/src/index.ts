@@ -88,11 +88,13 @@ const createReadStream = (
         const uri = await getURI()
         throwIfAborted(signal)
         const data = await withVFSErr(vscode.workspace.fs.readFile(uri))
-        ctrl.enqueue(data)
+        if (data.byteLength > 0) ctrl.enqueue(data)
+        ctrl.close()
       } catch (err) {
         ctrl.error(err)
       }
-    }
+    },
+    type: 'bytes'
   })
 }
 
