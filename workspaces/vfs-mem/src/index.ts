@@ -285,6 +285,11 @@ const DEFAULT_POOLS: MemVFSPoolSpec[] = [
   { blockSize: 4096, count: 250 }
 ]
 
+export interface MemVFSMountLocation {
+  fs: VFS
+  path: string
+}
+
 export class MemVFS extends VFS {
   private _root?: FSNode
   private _pools: FSFilePool[]
@@ -1618,11 +1623,26 @@ export class MemVFS extends VFS {
     })
   }
 
+  protected async _readMount (at: string[]): Promise<MemVFSMountLocation> {
+    const result = this._entry(at, true, 0)
+    if (!result.mount) {
+      throw new VFSError('filepath not within a mount', { code: 'EINVAL' })
+    }
+    return {
+      fs: result.vfs,
+      path: '/' + result.path.join('/')
+    }
+  }
+
   mount (path: string, fs: VFS, options: { mountPath?: string } = {}) {
     return this._mount(
       vfsPath.parse(path).parts,
       fs,
       vfsPath.parse(options?.mountPath ?? '/').parts
     )
+  }
+
+  readMount (path: string) {
+    return this._readMount(vfsPath.parse(path).parts)
   }
 }
