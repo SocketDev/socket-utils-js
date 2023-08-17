@@ -21,7 +21,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "rm -rf shared/tsbuildinfo && npm run build --workspaces",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

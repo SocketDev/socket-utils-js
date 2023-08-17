@@ -8,8 +8,8 @@
   "exports": {
     ".": {
       "import": {
-        "default": "./esm/index.js",
-        "types": "./esm/index.d.ts"
+        "default": "./esm/index.mjs",
+        "types": "./esm/index.d.mts"
       },
       "require": {
         "default": "./lib/index.js",
@@ -31,7 +31,7 @@
     "node": ">=16.5.0"
   },
   "scripts": {
-    "build": "tsc -b && tsc -b tsconfig.esm.json",
+    "build": "tsc -b && tsc -b tsconfig.esm.json && node ../../shared/scripts/fix-esm",
     "prepack": "npm run build"
   },
   "dependencies": {
