@@ -21,7 +21,7 @@ async function readSocketYml (fs: VFS) {
   }
 }
 
-function makeDummyFS (): Promise<VFS> {
+async function makeDummyFS (): Promise<VFS> {
   // Can replace MemVFS with any other VFS implementation
   // e.g. NodeVFS from @socketsecurity/vfs-node
   let sampleFS = new MemVFS()

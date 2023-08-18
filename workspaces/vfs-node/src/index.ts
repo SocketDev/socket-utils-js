@@ -7,9 +7,9 @@ import {
   WritableStream as NodeWritableStream,
 } from 'node:stream/web'
 
-import { subscribe as subscribeWatcher } from '@parcel/watcher'
+import * as parcelWatcher from '@parcel/watcher'
 import { VFS, VFSError, VFSFileHandle, path as vfsPath } from '@socketsecurity/vfs'
-import { matcher } from 'micromatch'
+import * as micromatch from 'micromatch'
 
 import type {
   AsyncSubscription as WatcherSubscription,
@@ -582,7 +582,7 @@ export class NodeVFS extends VFS {
 
   protected async _watch (glob: string, onEvent: VFSWatchCallback, onError: VFSWatchErrorCallback) {
     const entry = {
-      isMatch: matcher(glob, {
+      isMatch: micromatch.matcher(glob, {
         nocase: true,
         dot: true,
         // TODO: this does nothing
@@ -593,7 +593,9 @@ export class NodeVFS extends VFS {
     }
     this._watchCallbacks.add(entry)
     if (!this._watcher) {
-      this._watcher = await withVFSErr(subscribeWatcher(this._base, this._onWatchEvent.bind(this)))
+      this._watcher = await withVFSErr(
+        parcelWatcher.subscribe(this._base, this._onWatchEvent.bind(this))
+      )
     }
     return async () => {
       this._watchCallbacks.delete(entry)
