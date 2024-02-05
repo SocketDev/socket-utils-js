@@ -29,12 +29,12 @@
     "pony-cause": "^2.1.10"
   },
   "devDependencies": {
-    "@socketsecurity/eslint-config": "^3.0.1",
-    "@typescript-eslint/eslint-plugin": "^5.56.0",
-    "@typescript-eslint/parser": "^5.56.0",
-    "eslint": "^8.45.0",
-    "eslint-import-resolver-typescript": "^3.5.5",
-    "eslint-plugin-import": "^2.27.5",
-    "typescript": "^5.0.4"
+    "@socketsecurity/eslint-config": "^4.0.1",
+    "@typescript-eslint/eslint-plugin": "^6.7.3",
+    "@typescript-eslint/parser": "^6.7.3",
+    "eslint": "^8.56.0",
+    "eslint-import-resolver-typescript": "^3.6.1",
+    "eslint-plugin-import": "^2.29.1",
+    "typescript": "^5.3.3"
   }
 }
