@@ -37,7 +37,7 @@
   "dependencies": {
     "@parcel/watcher": "^2.2.0",
     "@socketsecurity/vfs": "^0.1.0",
-    "micromatch": "^4.0.5",
+    "micromatch": "^4.0.8",
     "@types/node": ">=16.5.0"
   },
   "devDependencies": {
