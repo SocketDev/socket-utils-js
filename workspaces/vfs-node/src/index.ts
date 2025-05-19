@@ -450,7 +450,7 @@ export class NodeVFS extends VFS {
   protected async _readDirent (dir: string[]) {
     const dirents = await withVFSErr(
       fs.promises.readdir(await this._fsPath(dir),
-      { withFileTypes: true })
+        { withFileTypes: true })
     )
     return dirents.map<VFSDirent | null>(ent => {
       const type = getEntryType(ent)

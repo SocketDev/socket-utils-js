@@ -12,8 +12,8 @@ const parseParts = (paths: string[]): ParsedPath => {
     let j = i === 0 && absolute ? 1 : 0
     if (
       pathParts.length === j + 1 && (
-      !pathParts[j] || (!j && pathParts[j] === '.')
-    )) {
+        !pathParts[j] || (!j && pathParts[j] === '.')
+      )) {
       continue
     }
     for (; j < pathParts.length; ++j) {

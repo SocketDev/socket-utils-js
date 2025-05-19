@@ -441,9 +441,9 @@ export class MemVFS extends VFS {
       if (create && (create & FindContextCreateMode.Recurse || !path.length)) {
         this._root = create & FindContextCreateMode.Dir
           ? { type: FileNodeType.Dir, children: new Map() }
-            : create & FindContextCreateMode.File
-              ? { type: FileNodeType.File, content: null }
-              : { type: FileNodeType.Symlink, to: [], relative: false }
+          : create & FindContextCreateMode.File
+            ? { type: FileNodeType.File, content: null }
+            : { type: FileNodeType.Symlink, to: [], relative: false }
         create |= FindContextCreateMode.DidCreate
       } else {
         throw new VFSError('no such file or directory', { code: 'ENOENT' })

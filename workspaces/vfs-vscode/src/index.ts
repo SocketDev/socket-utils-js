@@ -7,7 +7,7 @@ import * as vscode from 'vscode'
 import type {
   VFSWriteStream, VFSDirent, VFSEntryType, VFSErrorCode,
   VFSReadStream, VFSWatchCallback, VFSWatchErrorCallback, VFSStats
-, VFSWatchUnsubscribe
+  , VFSWatchUnsubscribe
 } from '@socketsecurity/vfs'
 import type {
   ReadableStream as NodeReadableStream,
@@ -244,9 +244,11 @@ export class NodeVFS extends VFS {
     if (src.some(part => /\\|\//.test(part))) {
       throw new VFSError('no such file or directory', { code: 'ENOENT' })
     }
-    return src.length ? this._base.with({
-      path: this._base.path + '/' + src.join('/')
-    }) : this._base
+    return src.length
+      ? this._base.with({
+        path: this._base.path + '/' + src.join('/')
+      })
+      : this._base
   }
 
   private _relURI (uri: vscode.Uri) {
