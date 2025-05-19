@@ -2,6 +2,7 @@
   "name": "@socketsecurity/utils",
   "private": true,
   "version": "1.0.0",
+  "type": "commonjs",
   "workspaces": [
     "workspaces/*"
   ],
@@ -29,12 +30,7 @@
     "pony-cause": "^2.1.10"
   },
   "devDependencies": {
-    "@socketsecurity/eslint-config": "^4.0.1",
-    "@typescript-eslint/eslint-plugin": "^6.7.3",
-    "@typescript-eslint/parser": "^6.7.3",
-    "eslint": "^8.56.0",
-    "eslint-import-resolver-typescript": "^3.6.1",
-    "eslint-plugin-import": "^2.29.1",
-    "typescript": "^5.3.3"
+    "neostandard": "^0.12.1",
+    "typescript": "~5.3.3"
   }
 }
