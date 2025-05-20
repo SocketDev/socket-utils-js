@@ -1,6 +1,0 @@
-*.js
-*.mjs
-*.ts
-*.d.ts
-*.d.mts
-!workspaces/*/src/**/*.ts
