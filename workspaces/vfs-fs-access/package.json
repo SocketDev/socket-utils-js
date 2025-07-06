@@ -32,7 +32,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@socketsecurity/vfs": "^0.1.0",
+    "@socketsecurity/vfs": "workspace:*",
     "@types/wicg-file-system-access": ">=2020.9.6"
   }
 }

@@ -36,7 +36,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@socketsecurity/vfs": "^0.1.0",
+    "@socketsecurity/vfs": "workspace:*",
     "@types/node": ">=16.5.0",
     "@types/vscode": ">=1.66.0"
   }
